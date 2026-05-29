@@ -20,13 +20,13 @@ type Article struct {
 	IsFeatured   bool       `gorm:"default:false" json:"is_featured"`
 	AllowComment bool       `gorm:"default:true" json:"allow_comment"`
 	PublishedAt  *time.Time `json:"published_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 
 	// 关联
-	User      User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Category  Category   `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
-	Tags      []Tag      `gorm:"many2many:article_tags" json:"tags,omitempty"`
+	User     User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Category Category `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
+	Tags     []Tag    `gorm:"many2many:article_tags" json:"tags,omitempty"`
 }
 
 func (Article) TableName() string {
