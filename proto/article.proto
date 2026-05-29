@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+package article;
+
+option go_package = "github.com/mysunshines/blog-article/proto/pb";
+
+// 错误码定义 (区间: 30000-39999)
+enum ArticleErrorCode {
+    ARTICLE_SUCCESS = 0;
+    ARTICLE_NOT_FOUND = 30001;
+    ARTICLE_CREATE_FAILED = 30011;
+    ARTICLE_UPDATE_FAILED = 30012;
+    ARTICLE_DELETE_FAILED = 30013;
+    ARTICLE_LIST_FAILED = 30014;
+}
+
+service ArticleService {
+    rpc CreateArticle(CreateArticleRequest) returns (CreateArticleResponse);
+    rpc GetArticle(GetArticleRequest) returns (GetArticleResponse);
+    rpc UpdateArticle(UpdateArticleRequest) returns (UpdateArticleResponse);
+    rpc DeleteArticle(DeleteArticleRequest) returns (DeleteArticleResponse);
+    rpc ListArticles(ListArticlesRequest) returns (ListArticlesResponse);
+    rpc GetArticleBySlug(GetArticleBySlugRequest) returns (GetArticleBySlugResponse);
+    rpc IncrementViewCount(IncrementViewCountRequest) returns (IncrementViewCountResponse);
+    rpc SearchArticles(SearchArticlesRequest) returns (SearchArticlesResponse);
+    rpc GetUserArticles(GetUserArticlesRequest) returns (GetUserArticlesResponse);
+    rpc GetCategories(GetCategoriesRequest) returns (GetCategoriesResponse);
+    rpc GetTags(GetTagsRequest) returns (GetTagsResponse);
+}
+
+message Article {
+    uint32 id = 1;
+    uint32 user_id = 2;
+    string username = 3;
+    string title = 4;
+    string slug = 5;
+    string summary = 6;
+    string content = 7;
+    string cover_image = 8;
+    uint32 category_id = 9;
+    string category_name = 10;
+    repeated string tags = 11;
+    uint32 view_count = 12;
+    uint32 comment_count = 13;
+    uint32 like_count = 14;
+    bool is_published = 15;
+    bool is_featured = 16;
+    bool allow_comment = 17;
+    string created_at = 18;
+    string updated_at = 19;
+    string published_at = 20;
+}
+
+message Category {
+    uint32 id = 1;
+    string name = 2;
+    string slug = 3;
+    string description = 4;
+    uint32 article_count = 5;
+    uint32 parent_id = 6;
+    uint32 sort = 7;
+    string created_at = 8;
+}
+
+message Tag {
+    uint32 id = 1;
+    string name = 2;
+    string slug = 3;
+    uint32 article_count = 4;
+    string created_at = 5;
+}
+
+message CreateArticleRequest {
+    uint32 user_id = 1;
+    string title = 2;
+    string content = 3;
+    string summary = 4;
+    string cover_image = 5;
+    uint32 category_id = 6;
+    repeated string tags = 7;
+    bool is_published = 8;
+    bool is_featured = 9;
+    bool allow_comment = 10;
+}
+
+message CreateArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message GetArticleRequest {
+    uint32 article_id = 1;
+}
+
+message GetArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message UpdateArticleRequest {
+    uint32 article_id = 1;
+    uint32 user_id = 2;
+    string title = 3;
+    string content = 4;
+    string summary = 5;
+    string cover_image = 6;
+    uint32 category_id = 7;
+    repeated string tags = 8;
+    bool is_published = 9;
+    bool is_featured = 10;
+    bool allow_comment = 11;
+}
+
+message UpdateArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message DeleteArticleRequest {
+    uint32 article_id = 1;
+    uint32 user_id = 2;
+}
+
+message DeleteArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+}
+
+message ListArticlesRequest {
+    uint32 page = 1;
+    uint32 page_size = 2;
+    uint32 category_id = 3;
+    string tag = 4;
+    bool is_published = 5;
+    string order_by = 6;
+}
+
+message ListArticlesResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Article articles = 3;
+    uint32 total = 4;
+}
+
+message GetArticleBySlugRequest {
+    string slug = 1;
+}
+
+message GetArticleBySlugResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message IncrementViewCountRequest {
+    uint32 article_id = 1;
+}
+
+message IncrementViewCountResponse {
+    uint32 code = 1;
+    string message = 2;
+    uint32 view_count = 3;
+}
+
+message SearchArticlesRequest {
+    string keyword = 1;
+    uint32 page = 2;
+    uint32 page_size = 3;
+}
+
+message SearchArticlesResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Article articles = 3;
+    uint32 total = 4;
+}
+
+message GetUserArticlesRequest {
+    uint32 user_id = 1;
+    uint32 page = 2;
+    uint32 page_size = 3;
+}
+
+message GetUserArticlesResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Article articles = 3;
+    uint32 total = 4;
+}
+
+message GetCategoriesRequest {}
+
+message GetCategoriesResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Category categories = 3;
+}
+
+message GetTagsRequest {}
+
+message GetTagsResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Tag tags = 3;
+}

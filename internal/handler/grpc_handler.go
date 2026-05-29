@@ -1,0 +1,309 @@
+package handler
+
+import (
+	"context"
+
+	"github.com/mysunshines/blog-article/internal/model"
+	"github.com/mysunshines/blog-article/internal/service"
+	article "github.com/mysunshines/blog-article/proto/pb"
+	"github.com/mysunshines/gocommon/constants"
+	"github.com/mysunshines/gocommon/util"
+
+	"github.com/sony/gobreaker"
+)
+
+// GrpcArticleHandler gRPC 文章处理器适配器（支持熔断）
+type GrpcArticleHandler struct {
+	article.UnimplementedArticleServiceServer
+	Svc service.ArticleService
+	Cb  *gobreaker.CircuitBreaker
+}
+
+func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.CreateArticleRequest) (*article.CreateArticleResponse, error) {
+	createdArticle, err := h.Svc.CreateArticle(ctx, &model.CreateArticleRequest{
+		UserID:       uint(req.UserId),
+		Title:        req.Title,
+		Content:      req.Content,
+		Summary:      req.Summary,
+		CoverImage:   req.CoverImage,
+		CategoryID:   uint(req.CategoryId),
+		Tags:         req.Tags,
+		IsPublished:  req.IsPublished,
+		IsFeatured:   req.IsFeatured,
+		AllowComment: req.AllowComment,
+	})
+
+	if err != nil {
+		return &article.CreateArticleResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_CREATE_FAILED),
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &article.CreateArticleResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+		Article: ConvertToProtoArticle(createdArticle),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetArticle(ctx context.Context, req *article.GetArticleRequest) (*article.GetArticleResponse, error) {
+	foundArticle, err := h.Svc.GetArticle(ctx, uint(req.ArticleId))
+	if err != nil {
+		return &article.GetArticleResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_NOT_FOUND),
+			Message: "Article not found",
+		}, nil
+	}
+
+	return &article.GetArticleResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+		Article: ConvertToProtoArticle(foundArticle),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.ListArticlesRequest) (*article.ListArticlesResponse, error) {
+	result, total, err := h.Svc.ListArticles(ctx, &model.ListArticlesRequest{
+		Page:        uint(req.Page),
+		Size:        uint(req.PageSize),
+		CategoryID:  uint(req.CategoryId),
+		Tag:         req.Tag,
+		IsPublished: req.IsPublished,
+		OrderBy:     req.OrderBy,
+	})
+
+	if err != nil {
+		return &article.ListArticlesResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_LIST_FAILED),
+			Message: err.Error(),
+		}, nil
+	}
+
+	articles := make([]*article.Article, len(result))
+	for i, a := range result {
+		articles[i] = ConvertToProtoArticle(a)
+	}
+
+	return &article.ListArticlesResponse{
+		Code:     uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:  "success",
+		Articles: articles,
+		Total:    uint32(total),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.UpdateArticleRequest) (*article.UpdateArticleResponse, error) {
+	updatedArticle, err := h.Svc.UpdateArticle(ctx, uint(req.ArticleId), &model.UpdateArticleRequest{
+		UserID:       uint(req.UserId),
+		Title:        req.Title,
+		Content:      req.Content,
+		Summary:      req.Summary,
+		CoverImage:   req.CoverImage,
+		CategoryID:   uint(req.CategoryId),
+		Tags:         req.Tags,
+		IsPublished:  req.IsPublished,
+		IsFeatured:   req.IsFeatured,
+		AllowComment: req.AllowComment,
+	})
+	if err != nil {
+		return &article.UpdateArticleResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_UPDATE_FAILED),
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &article.UpdateArticleResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+		Article: ConvertToProtoArticle(updatedArticle),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) DeleteArticle(ctx context.Context, req *article.DeleteArticleRequest) (*article.DeleteArticleResponse, error) {
+	err := h.Svc.DeleteArticle(ctx, uint(req.ArticleId), uint(req.UserId))
+	if err != nil {
+		return &article.DeleteArticleResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_DELETE_FAILED),
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &article.DeleteArticleResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetArticleBySlug(ctx context.Context, req *article.GetArticleBySlugRequest) (*article.GetArticleBySlugResponse, error) {
+	foundArticle, err := h.Svc.GetArticleBySlug(ctx, req.Slug)
+	if err != nil {
+		return &article.GetArticleBySlugResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_NOT_FOUND),
+			Message: "Article not found",
+		}, nil
+	}
+
+	return &article.GetArticleBySlugResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+		Article: ConvertToProtoArticle(foundArticle),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) IncrementViewCount(ctx context.Context, req *article.IncrementViewCountRequest) (*article.IncrementViewCountResponse, error) {
+	viewCount, err := h.Svc.IncrementViewCount(ctx, uint(req.ArticleId))
+	if err != nil {
+		return &article.IncrementViewCountResponse{
+			Code:    constants.ErrCodeInternal,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &article.IncrementViewCountResponse{
+		Code:      uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:   "success",
+		ViewCount: uint32(viewCount),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.SearchArticlesRequest) (*article.SearchArticlesResponse, error) {
+	result, total, err := h.Svc.SearchArticles(ctx, &model.SearchArticlesRequest{
+		Keyword: req.Keyword,
+		Page:    uint(req.Page),
+		Size:    uint(req.PageSize),
+	})
+	if err != nil {
+		return &article.SearchArticlesResponse{
+			Code:    constants.ErrCodeInternal,
+			Message: err.Error(),
+		}, nil
+	}
+
+	articles := make([]*article.Article, len(result))
+	for i, a := range result {
+		articles[i] = ConvertToProtoArticle(a)
+	}
+
+	return &article.SearchArticlesResponse{
+		Code:     uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:  "success",
+		Articles: articles,
+		Total:    uint32(total),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetUserArticles(ctx context.Context, req *article.GetUserArticlesRequest) (*article.GetUserArticlesResponse, error) {
+	result, total, err := h.Svc.GetUserArticles(ctx, uint(req.UserId), uint(req.Page), uint(req.PageSize))
+	if err != nil {
+		return &article.GetUserArticlesResponse{
+			Code:    constants.ErrCodeInternal,
+			Message: err.Error(),
+		}, nil
+	}
+
+	articles := make([]*article.Article, len(result))
+	for i, a := range result {
+		articles[i] = ConvertToProtoArticle(a)
+	}
+
+	return &article.GetUserArticlesResponse{
+		Code:     uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:  "success",
+		Articles: articles,
+		Total:    uint32(total),
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetCategories(ctx context.Context, req *article.GetCategoriesRequest) (*article.GetCategoriesResponse, error) {
+	categories, err := h.Svc.GetCategories(ctx)
+	if err != nil {
+		return &article.GetCategoriesResponse{
+			Code:    constants.ErrCodeInternal,
+			Message: err.Error(),
+		}, nil
+	}
+
+	protoCategories := make([]*article.Category, len(categories))
+	for i, c := range categories {
+		protoCategories[i] = &article.Category{
+			Id:           uint32(c.ID),
+			Name:         c.Name,
+			Slug:         c.Slug,
+			Description:  c.Description,
+			ParentId:     uint32(c.ParentID),
+			ArticleCount: uint32(c.ArticleCount),
+			Sort:         uint32(c.Sort),
+			CreatedAt:    c.CreatedAt.Format(constants.DateTimeFormat),
+		}
+	}
+
+	return &article.GetCategoriesResponse{
+		Code:       uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:    "success",
+		Categories: protoCategories,
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetTags(ctx context.Context, req *article.GetTagsRequest) (*article.GetTagsResponse, error) {
+	tags, err := h.Svc.GetTags(ctx)
+	if err != nil {
+		return &article.GetTagsResponse{
+			Code:    constants.ErrCodeInternal,
+			Message: err.Error(),
+		}, nil
+	}
+
+	protoTags := make([]*article.Tag, len(tags))
+	for i, t := range tags {
+		protoTags[i] = &article.Tag{
+			Id:           uint32(t.ID),
+			Name:         t.Name,
+			Slug:         t.Slug,
+			ArticleCount: uint32(t.ArticleCount),
+			CreatedAt:    t.CreatedAt.Format(constants.DateTimeFormat),
+		}
+	}
+
+	return &article.GetTagsResponse{
+		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message: "success",
+		Tags:    protoTags,
+	}, nil
+}
+
+// ConvertToProtoArticle 将 model.Article 转换为 proto Article
+func ConvertToProtoArticle(a *model.Article) *article.Article {
+	tags := make([]string, len(a.Tags))
+	for i, t := range a.Tags {
+		tags[i] = t.Name
+	}
+
+	publishedAt := ""
+	if a.PublishedAt != nil {
+		publishedAt = util.FormatTime(*a.PublishedAt)
+	}
+
+	return &article.Article{
+		Id:           uint32(a.ID),
+		UserId:       uint32(a.UserID),
+		Username:     a.User.Username,
+		Title:        a.Title,
+		Slug:         a.Slug,
+		Summary:      a.Summary,
+		Content:      a.Content,
+		CoverImage:   a.CoverImage,
+		CategoryId:   uint32(a.CategoryID),
+		CategoryName: a.Category.Name,
+		Tags:         tags,
+		ViewCount:    uint32(a.ViewCount),
+		CommentCount: uint32(a.CommentCount),
+		LikeCount:    uint32(a.LikeCount),
+		IsPublished:  a.IsPublished,
+		IsFeatured:   a.IsFeatured,
+		AllowComment: a.AllowComment,
+		CreatedAt:    util.FormatTime(a.CreatedAt),
+		UpdatedAt:    util.FormatTime(a.UpdatedAt),
+		PublishedAt:  publishedAt,
+	}
+}

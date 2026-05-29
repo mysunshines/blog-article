@@ -1,0 +1,78 @@
+app:
+  name: "article-service"
+  env: "development"
+  log_dir: "./logs"
+  log_level: "info"
+
+# HTTP 服务配置
+http:
+  host: "0.0.0.0"
+  port: 8082
+
+# gRPC 服务配置
+grpc:
+  host: "0.0.0.0"
+  port: 9002
+
+# 数据库配置
+database:
+  host: "localhost"
+  port: 3306
+  user: "bloguser"
+  password: "blogpassword"
+  name: "blog"
+  max_open_conns: 100
+  max_idle_conns: 10
+  conn_max_lifetime: 3600
+
+# Redis 配置
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 100
+
+# JWT 配置
+jwt:
+  secret: "your-secret-key-change-in-production"
+  expire_time: 604800
+
+# Consul 注册中心配置
+consul:
+  address: "localhost:8500"
+  check_interval: 10
+  deregister_critical: 30
+
+# Prometheus 指标配置
+metrics:
+  enabled: true
+  path: "/metrics"
+  port: 9092
+
+# 限流配置
+rate_limit:
+  enabled: true
+  qps: 1000
+  burst: 2000
+
+# CORS 配置
+cors:
+  enabled: true
+  allow_origins:
+    - "http://localhost:8080"
+    - "http://localhost:3000"
+  allow_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allow_headers:
+    - "Origin"
+    - "Content-Type"
+    - "Authorization"
+  expose_headers:
+    - "Content-Length"
+  allow_credentials: true
+  max_age: 86400
