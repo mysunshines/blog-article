@@ -4,24 +4,36 @@ import (
 	"time"
 )
 
+// 文章状态机
+const (
+	ArticleStatusDraft     = "draft"     // 草稿
+	ArticleStatusPending   = "pending"   // 待审核
+	ArticleStatusPublished = "published" // 已发布
+	ArticleStatusOffline   = "offline"   // 已下线
+	ArticleStatusRejected  = "rejected"  // 已拒绝
+)
+
 type Article struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	UserID       uint       `gorm:"index" json:"user_id"`
-	Title        string     `gorm:"size:256" json:"title"`
-	Slug         string     `gorm:"uniqueIndex;size:256" json:"slug"`
-	Summary      string     `gorm:"size:512" json:"summary"`
-	Content      string     `gorm:"type:text" json:"content"`
-	CoverImage   string     `gorm:"size:256" json:"cover_image"`
-	CategoryID   uint       `gorm:"index" json:"category_id"`
-	ViewCount    int        `gorm:"default:0" json:"view_count"`
-	CommentCount int        `gorm:"default:0" json:"comment_count"`
-	LikeCount    int        `gorm:"default:0" json:"like_count"`
-	IsPublished  bool       `gorm:"default:false" json:"is_published"`
-	IsFeatured   bool       `gorm:"default:false" json:"is_featured"`
-	AllowComment bool       `gorm:"default:true" json:"allow_comment"`
-	PublishedAt  *time.Time `json:"published_at"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	UserID        uint       `gorm:"index" json:"user_id"`
+	Title         string     `gorm:"size:256" json:"title"`
+	Slug          string     `gorm:"uniqueIndex;size:256" json:"slug"`
+	Summary       string     `gorm:"size:512" json:"summary"`
+	Content       string     `gorm:"type:text" json:"content"`
+	CoverImage    string     `gorm:"size:256" json:"cover_image"`
+	CategoryID    uint       `gorm:"index" json:"category_id"`
+	ViewCount     int        `gorm:"default:0" json:"view_count"`
+	CommentCount  int        `gorm:"default:0" json:"comment_count"`
+	LikeCount     int        `gorm:"default:0" json:"like_count"`
+	IsPublished   bool       `gorm:"default:false" json:"is_published"`
+	Status        string     `gorm:"size:16;default:'draft'" json:"status"`
+	RejectReason  string     `gorm:"size:256" json:"reject_reason"`
+	OfflineReason string     `gorm:"size:256" json:"offline_reason"`
+	IsFeatured    bool       `gorm:"default:false" json:"is_featured"`
+	AllowComment  bool       `gorm:"default:true" json:"allow_comment"`
+	PublishedAt   *time.Time `json:"published_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 
 	// 关联
 	User     User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
@@ -124,4 +136,16 @@ type SearchArticlesRequest struct {
 	Keyword string `form:"keyword" binding:"required"`
 	Page    uint   `form:"page"`
 	Size    uint   `form:"size"`
+}
+
+// AdminListArticlesRequest 后台审核列表请求（按状态筛选）
+type AdminListArticlesRequest struct {
+	Status string `form:"status"`
+	Page   uint   `form:"page"`
+	Size   uint   `form:"size"`
+}
+
+// ReviewArticleRequest 审核操作（拒绝/下线）请求，携带原因
+type ReviewArticleRequest struct {
+	Reason string `json:"reason"`
 }

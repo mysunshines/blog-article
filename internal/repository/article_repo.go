@@ -24,6 +24,7 @@ type ArticleRepository interface {
 	Search(ctx context.Context, req *model.SearchArticlesRequest) ([]*model.Article, int64, error)
 	GetByUserID(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
+	AdminList(ctx context.Context, req *model.AdminListArticlesRequest) ([]*model.Article, int64, error)
 }
 
 type articleRepository struct {
@@ -324,6 +325,51 @@ func (r *articleRepository) IncrementViewCount(ctx context.Context, id uint) (in
 	var article model.Article
 	r.db.WithContext(ctx).First(&article, id)
 	return article.ViewCount, nil
+}
+
+func (r *articleRepository) AdminList(ctx context.Context, req *model.AdminListArticlesRequest) ([]*model.Article, int64, error) {
+	var articles []*model.Article
+	var total int64
+
+	page := req.Page
+	if page < 1 {
+		page = 1
+	}
+	size := req.Size
+	if size < 1 || size > 100 {
+		size = 10
+	}
+	offset := (page - 1) * size
+
+	baseQuery := r.db.WithContext(ctx).Model(&model.Article{})
+	if req.Status != "" {
+		baseQuery = baseQuery.Where("status = ?", req.Status)
+	}
+
+	results := pool.Go(ctx,
+		func(ctx context.Context) (interface{}, error) {
+			return nil, baseQuery.Session(&gorm.Session{}).Count(&total).Error
+		},
+		func(ctx context.Context) (interface{}, error) {
+			return nil, baseQuery.Session(&gorm.Session{}).
+				Preload("User").
+				Preload("Category").
+				Preload("Tags").
+				Order("created_at DESC").
+				Offset(int(offset)).
+				Limit(int(size)).
+				Find(&articles).Error
+		},
+	)
+
+	if results[0].Err != nil {
+		return nil, 0, apperrors.Internal("查询后台文章列表失败", results[0].Err)
+	}
+	if results[1].Err != nil {
+		return nil, 0, apperrors.Internal("查询后台文章列表失败", results[1].Err)
+	}
+
+	return articles, total, nil
 }
 
 // 辅助函数

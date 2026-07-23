@@ -6,7 +6,7 @@ exclude google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/mysunshines/gocommon v1.0.0
+	github.com/mysunshines/gocommon v1.0.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
 	golang.org/x/sync v0.19.0

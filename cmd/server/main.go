@@ -50,16 +50,44 @@ func NewServer(cfg *config.Config) *Server {
 	}
 	db := common_database.GetDB()
 
-	// 自动迁移
-	if err := db.AutoMigrate(&model.Article{}, &model.Category{}, &model.Tag{}, &model.ArticleTag{}, &model.User{}); err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
-	}
-
-	// 初始化 Redis 缓存（设置 KeyPrefix 后直接传递）
+	// 初始化 Redis 缓存（必须在 AutoMigrate 之前，用于分布式锁）
 	redisCfg := cfg.Redis
 	redisCfg.KeyPrefix = constants.RedisKeyPrefixArticle
 	if err := cache.Init(&redisCfg); err != nil {
 		log.Warnf("Warning: Failed to init Redis: %v", err)
+	}
+
+	// 自动迁移（分布式锁保护，多实例只有一个执行）
+	const migrationLockKey = "migration:lock:article_service"
+	const migrationLockTTL = 60 * time.Second
+	hostname, _ := os.Hostname()
+	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+
+	acquired, err := cache.TryLock(context.Background(), migrationLockKey, instanceID, migrationLockTTL)
+	if err != nil {
+		log.Warnf("Failed to acquire migration lock (Redis unavailable): %v, proceeding without lock", err)
+	} else if acquired {
+		log.Infof("Migration lock acquired by instance %s", instanceID)
+		defer func() {
+			if unlockErr := cache.Unlock(context.Background(), migrationLockKey, instanceID); unlockErr != nil {
+				log.Warnf("Failed to release migration lock: %v", unlockErr)
+			}
+		}()
+	} else {
+		log.Info("Migration lock held by another instance, skipping AutoMigrate")
+		time.Sleep(2 * time.Second)
+	}
+
+	if acquired || err != nil {
+		if migrateErr := db.AutoMigrate(&model.Article{}, &model.Category{}, &model.Tag{}, &model.ArticleTag{}, &model.User{}); migrateErr != nil {
+			log.Fatalf("Failed to migrate database: %v", migrateErr)
+		}
+		// 兼容性迁移：将历史已发布文章（status 为空）补齐为 published
+		if fixErr := db.Model(&model.Article{}).
+			Where("status = ? AND is_published = ?", "", true).
+			Update("status", model.ArticleStatusPublished).Error; fixErr != nil {
+			log.Warnf("Failed to backfill article status: %v", fixErr)
+		}
 	}
 
 	// 初始化限流器（类型别名，直接传递）
@@ -178,17 +206,31 @@ func (s *Server) runHTTPServer() {
 	{
 		articleGroup := api.Group("/article")
 		{
-			articleGroup.GET("/list", s.articleHandl.ListArticles)
+			articleGroup.GET("", s.articleHandl.ListArticles)
 			articleGroup.GET("/search", s.articleHandl.SearchArticles)
 			articleGroup.GET("/categories", s.articleHandl.GetCategories)
 			articleGroup.GET("/tags", s.articleHandl.GetTags)
 			articleGroup.GET("/:id", s.articleHandl.GetArticle)
 			articleGroup.GET("/slug/:slug", s.articleHandl.GetArticleBySlug)
 			articleGroup.GET("/user/:user_id", s.articleHandl.GetUserArticles)
-			articleGroup.POST("/create", commonmiddleware.JWTValidMiddleware(), s.articleHandl.CreateArticle)
+			articleGroup.POST("", commonmiddleware.JWTValidMiddleware(), s.articleHandl.CreateArticle)
 			articleGroup.PUT("/:id", commonmiddleware.JWTValidMiddleware(), s.articleHandl.UpdateArticle)
 			articleGroup.DELETE("/:id", commonmiddleware.JWTValidMiddleware(), s.articleHandl.DeleteArticle)
 			articleGroup.POST("/:id/view", s.articleHandl.IncrementViewCount)
+		}
+
+		// 后台审核管理（管理员专属）
+		adminGroup := api.Group("/admin/articles")
+		adminGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.AdminOnlyMiddleware())
+		{
+			adminGroup.GET("", s.articleHandl.ListArticlesForAdmin)
+			adminGroup.GET("/:id", s.articleHandl.GetArticle)
+			adminGroup.POST("/:id/approve", s.articleHandl.ApproveArticle)
+			adminGroup.POST("/:id/reject", s.articleHandl.RejectArticle)
+			adminGroup.POST("/:id/offline", s.articleHandl.OfflineArticle)
+			adminGroup.POST("/:id/publish", s.articleHandl.PublishArticle)
+			adminGroup.PUT("/:id", s.articleHandl.AdminUpdateArticle)
+			adminGroup.DELETE("/:id", s.articleHandl.AdminDeleteArticle)
 		}
 	}
 

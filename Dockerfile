@@ -6,6 +6,11 @@ WORKDIR /app
 # 安装依赖
 RUN apk add --no-cache git ca-certificates
 
+# 容器内默认 GOPROXY 为 proxy.golang.org，国内网络通常不可达，
+# 显式设置为本机一致的国内镜像，避免 go mod download 失败。
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,direct
+ENV GOSUMDB=off
+
 # 复制 go mod 文件
 COPY go.mod go.sum ./
 RUN go mod download

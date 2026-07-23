@@ -303,6 +303,204 @@ func (h *ArticleHandler) GetTags(c *gin.Context) {
 	response.Success(c, tags)
 }
 
+// ===================== 后台审核管理（仅管理员） =====================
+
+// ListArticlesForAdmin 后台文章列表（可按状态筛选）
+// @Summary 后台文章列表
+// @Tags admin
+// @Produce json
+// @Param status query string false "状态(draft/pending/published/offline/rejected)"
+// @Param page query int false "页码" default(1)
+// @Param size query int false "每页数量" default(10)
+// @Success 200 {object} response.PageResponse
+// @Router /api/v1/admin/articles [get]
+func (h *ArticleHandler) ListArticlesForAdmin(c *gin.Context) {
+	var req model.AdminListArticlesRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	articles, total, err := h.svc.AdminListArticles(c.Request.Context(), &req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.SuccessPage(c, articles, uint32(total), uint32(req.Page), uint32(req.Size))
+}
+
+// ApproveArticle 审核通过（pending -> published）
+// @Summary 审核通过文章
+// @Tags admin
+// @Produce json
+// @Param id path int true "文章ID"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id}/approve [post]
+func (h *ArticleHandler) ApproveArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	article, err := h.svc.ApproveArticle(c.Request.Context(), id)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, article)
+}
+
+// RejectArticle 审核拒绝（pending -> rejected）
+// @Summary 拒绝文章
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Param id path int true "文章ID"
+// @Param body body model.ReviewArticleRequest true "拒绝原因"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id}/reject [post]
+func (h *ArticleHandler) RejectArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	var req model.ReviewArticleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	article, err := h.svc.RejectArticle(c.Request.Context(), id, req.Reason)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, article)
+}
+
+// OfflineArticle 下线文章（published -> offline）
+// @Summary 下线文章
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Param id path int true "文章ID"
+// @Param body body model.ReviewArticleRequest true "下线原因"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id}/offline [post]
+func (h *ArticleHandler) OfflineArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	var req model.ReviewArticleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	article, err := h.svc.OfflineArticle(c.Request.Context(), id, req.Reason)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, article)
+}
+
+// PublishArticle 重新发布（offline -> published）
+// @Summary 重新发布已下线文章
+// @Tags admin
+// @Produce json
+// @Param id path int true "文章ID"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id}/publish [post]
+func (h *ArticleHandler) PublishArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	article, err := h.svc.PublishArticle(c.Request.Context(), id)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, article)
+}
+
+// AdminUpdateArticle 管理员编辑（绕过作者权限）
+// @Summary 管理员编辑文章
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Param id path int true "文章ID"
+// @Param article body model.UpdateArticleRequest true "文章信息"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id} [put]
+func (h *ArticleHandler) AdminUpdateArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	var req model.UpdateArticleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	article, err := h.svc.AdminUpdateArticle(c.Request.Context(), id, &req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, article)
+}
+
+// AdminDeleteArticle 管理员删除（绕过作者权限）
+// @Summary 管理员删除文章
+// @Tags admin
+// @Produce json
+// @Param id path int true "文章ID"
+// @Success 200 {object} response.Response
+// @Router /api/v1/admin/articles/{id} [delete]
+func (h *ArticleHandler) AdminDeleteArticle(c *gin.Context) {
+	id, err := parseIDParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "无效的文章ID")
+		return
+	}
+
+	if err := h.svc.AdminDeleteArticle(c.Request.Context(), id); err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, "删除成功", nil)
+}
+
+// parseIDParam 从路径参数解析 uint ID
+func parseIDParam(c *gin.Context, name string) (uint, error) {
+	idStr := c.Param(name)
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return uint(id), nil
+}
+
 // 辅助函数：从上下文获取用户ID
 func getUserID(c *gin.Context) uint {
 	// 从JWT中间件或上下文获取用户ID

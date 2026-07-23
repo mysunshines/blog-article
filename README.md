@@ -55,7 +55,7 @@ article-service/
 | 方法 | 路径 | 描述 | 认证 |
 |------|------|------|------|
 
-#### 4.1.1 GET `/api/v1/article/list` - 文章列表
+#### 4.1.1 GET `/api/v1/article` - 文章列表
 
 **查询参数 (Query Parameters)**:
 ```
@@ -112,7 +112,7 @@ page: int,            // int, 选填, 页码, 默认1
 size: int,            // int, 选填, 每页数量, 默认10
 ```
 
-#### 4.1.8 POST `/api/v1/article/create` - 创建文章
+#### 4.1.8 POST `/api/v1/article` - 创建文章
 
 **请求头**:
 ```
@@ -187,6 +187,40 @@ id: int,              // int, 必填, 文章ID
 #### 4.1.13 GET `/ready` - 就绪探针
 
 **说明**: 无参数
+
+### 后台审核管理 API（管理员专属）
+
+所有接口均需 `Authorization: Bearer <token>`，且调用者角色必须为管理员（`role=2`）。
+路径前缀为 `/api/v1/admin/articles`。
+
+**文章状态机**
+
+`draft`(草稿) → `pending`(待审核) → `published`(已发布) → `offline`(已下线)；
+`pending` 也可被 `reject` 为 `rejected`(已拒绝)；`offline` 可重新 `publish` 回到 `published`。
+
+> 普通作者创建文章默认进入 `pending`（待审核），由管理员审核通过后才会 `published`；
+> 已发布文章被作者编辑不会改变其状态。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/admin/articles?status=&page=&size=` | 审核列表（按状态筛选，status 可选 draft/pending/published/offline/rejected） |
+| POST | `/api/v1/admin/articles/:id/approve` | 审核通过（pending→published） |
+| POST | `/api/v1/admin/articles/:id/reject` | 拒绝（pending→rejected，请求体 `{"reason":"..."}`） |
+| POST | `/api/v1/admin/articles/:id/offline` | 下线（published→offline，请求体 `{"reason":"..."}`） |
+| POST | `/api/v1/admin/articles/:id/publish` | 重新发布（offline→published） |
+| PUT | `/api/v1/admin/articles/:id` | 管理员编辑（绕过作者权限，body 同创建文章） |
+| DELETE | `/api/v1/admin/articles/:id` | 管理员删除（绕过作者权限） |
+
+**前端管理页面**
+
+`web/admin.html` 提供了可视化的后台审核界面（列表筛选、通过/拒绝/下线/重新发布、编辑、删除）。
+
+> 注意：后台审核接口是 article-service 的 **HTTP** 端点，而网关（gateway）只做 gRPC 动态代理、不转发这些 HTTP 业务路由，
+> 因此 `admin.html` 需**直连 article-service 的 HTTP 端口**（默认 `9092`）。页面顶部已支持通过以下方式覆盖地址：
+> - 在引入脚本前设置 `window.ADMIN_API_BASE`
+> - 或访问时加参数 `?api=http://<host>:9092/api/v1/admin`
+>
+> article-service 已开启 CORS(`*`)，跨域访问被允许；调用时需携带登录后下发的 JWT（`role=2` 管理员）。
 
 ### 4.2 gRPC API
 
@@ -1343,7 +1377,7 @@ tx.Commit()
 
 ## 十一、API SQL 与索引分析
 
-### 10.1 获取文章详情 (GetArticle)
+### 11.1 获取文章详情 (GetArticle)
 
 **执行的SQL**:
 ```sql
@@ -1356,7 +1390,7 @@ SELECT * FROM articles WHERE id = ? LIMIT 1
 
 ---
 
-### 10.2 通过Slug获取文章 (GetArticleBySlug)
+### 11.2 通过Slug获取文章 (GetArticleBySlug)
 
 **执行的SQL**:
 ```sql
@@ -1369,7 +1403,7 @@ SELECT * FROM articles WHERE slug = ? LIMIT 1
 
 ---
 
-### 10.3 文章列表 (ListArticles)
+### 11.3 文章列表 (ListArticles)
 
 **执行的SQL**:
 ```sql
@@ -1406,7 +1440,7 @@ LIMIT ? OFFSET ?
 
 ---
 
-### 10.4 搜索文章 (SearchArticles)
+### 11.4 搜索文章 (SearchArticles)
 
 **执行的SQL**:
 ```sql
@@ -1429,7 +1463,7 @@ LIMIT ? OFFSET ?
 
 ---
 
-### 10.5 用户文章列表 (GetUserArticles)
+### 11.5 用户文章列表 (GetUserArticles)
 
 **执行的SQL**:
 ```sql
@@ -1448,7 +1482,7 @@ LIMIT ? OFFSET ?
 
 ---
 
-### 10.6 增加浏览数 (IncrementViewCount)
+### 11.6 增加浏览数 (IncrementViewCount)
 
 **执行的SQL**:
 ```sql
@@ -1461,7 +1495,7 @@ UPDATE articles SET view_count = view_count + 1 WHERE id = ?
 
 ---
 
-### 10.7 创建文章 (CreateArticle)
+### 11.7 创建文章 (CreateArticle)
 
 **执行的SQL**:
 ```sql
@@ -1493,7 +1527,7 @@ UPDATE categories SET article_count = article_count + 1 WHERE id = ?
 
 ---
 
-### 10.8 删除文章 (DeleteArticle)
+### 11.8 删除文章 (DeleteArticle)
 
 **执行的SQL**:
 ```sql

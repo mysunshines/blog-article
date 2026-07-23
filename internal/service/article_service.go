@@ -27,6 +27,15 @@ type ArticleService interface {
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
 	GetCategories(ctx context.Context) ([]*model.Category, error)
 	GetTags(ctx context.Context) ([]*model.Tag, error)
+
+	// 后台审核管理（仅管理员调用）
+	AdminListArticles(ctx context.Context, req *model.AdminListArticlesRequest) ([]*model.Article, int64, error)
+	ApproveArticle(ctx context.Context, id uint) (*model.Article, error)
+	RejectArticle(ctx context.Context, id uint, reason string) (*model.Article, error)
+	OfflineArticle(ctx context.Context, id uint, reason string) (*model.Article, error)
+	PublishArticle(ctx context.Context, id uint) (*model.Article, error)
+	AdminUpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error)
+	AdminDeleteArticle(ctx context.Context, id uint) error
 }
 
 type articleService struct {
@@ -54,6 +63,12 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 	// 生成 slug
 	slug := generateSlug(req.Title)
 
+	// 初始状态：默认草稿；若请求发布则进入待审核（由管理员审核通过后发布）
+	status := model.ArticleStatusDraft
+	if req.IsPublished {
+		status = model.ArticleStatusPending
+	}
+
 	// 构建文章模型
 	article := &model.Article{
 		UserID:       req.UserID,
@@ -63,15 +78,10 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 		Content:      req.Content,
 		CoverImage:   req.CoverImage,
 		CategoryID:   req.CategoryID,
-		IsPublished:  req.IsPublished,
+		Status:       status,
+		IsPublished:  status == model.ArticleStatusPublished,
 		IsFeatured:   req.IsFeatured,
 		AllowComment: req.AllowComment,
-	}
-
-	// 设置发布时间
-	if req.IsPublished {
-		now := time.Now()
-		article.PublishedAt = &now
 	}
 
 	// 创建文章
@@ -166,15 +176,10 @@ func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.
 	if req.CategoryID > 0 {
 		article.CategoryID = req.CategoryID
 	}
-	article.IsPublished = req.IsPublished
 	article.IsFeatured = req.IsFeatured
 	article.AllowComment = req.AllowComment
-
-	// 如果是首次发布
-	if req.IsPublished && article.PublishedAt == nil {
-		now := time.Now()
-		article.PublishedAt = &now
-	}
+	// 发布状态由状态机统一管理（审核通过后才会 published），作者编辑不改变状态
+	article.IsPublished = article.Status == model.ArticleStatusPublished
 
 	// 保存更新
 	if err := s.repo.Update(ctx, article); err != nil {
@@ -289,6 +294,154 @@ func (s *articleService) GetTags(ctx context.Context) ([]*model.Tag, error) {
 		return nil, err
 	}
 	return result.([]*model.Tag), nil
+}
+
+// --------------------------- 后台审核管理 ---------------------------
+
+func (s *articleService) AdminListArticles(ctx context.Context, req *model.AdminListArticlesRequest) ([]*model.Article, int64, error) {
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.Size < 1 {
+		req.Size = 10
+	}
+	return s.repo.AdminList(ctx, req)
+}
+
+func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if article.Status != model.ArticleStatusPending {
+		return nil, errors.BadRequest("仅待审核文章可以审核通过")
+	}
+
+	now := time.Now()
+	article.Status = model.ArticleStatusPublished
+	article.IsPublished = true
+	article.PublishedAt = &now
+	article.RejectReason = ""
+
+	if err := s.repo.Update(ctx, article); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *articleService) RejectArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if article.Status != model.ArticleStatusPending {
+		return nil, errors.BadRequest("仅待审核文章可以拒绝")
+	}
+
+	article.Status = model.ArticleStatusRejected
+	article.IsPublished = false
+	article.RejectReason = reason
+
+	if err := s.repo.Update(ctx, article); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if article.Status != model.ArticleStatusPublished {
+		return nil, errors.BadRequest("仅已发布文章可以下线")
+	}
+
+	article.Status = model.ArticleStatusOffline
+	article.IsPublished = false
+	article.OfflineReason = reason
+
+	if err := s.repo.Update(ctx, article); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if article.Status != model.ArticleStatusOffline {
+		return nil, errors.BadRequest("仅已下线文章可以重新发布")
+	}
+
+	now := time.Now()
+	article.Status = model.ArticleStatusPublished
+	article.IsPublished = true
+	if article.PublishedAt == nil {
+		article.PublishedAt = &now
+	}
+
+	if err := s.repo.Update(ctx, article); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 管理员编辑：不受作者权限限制，但保持原状态机不变
+	if req.Title != "" {
+		article.Title = req.Title
+		article.Slug = generateSlug(req.Title)
+	}
+	if req.Content != "" {
+		article.Content = req.Content
+	}
+	if req.Summary != "" {
+		article.Summary = req.Summary
+	}
+	if req.CoverImage != "" {
+		article.CoverImage = req.CoverImage
+	}
+	if req.CategoryID > 0 {
+		article.CategoryID = req.CategoryID
+	}
+	article.IsFeatured = req.IsFeatured
+	article.AllowComment = req.AllowComment
+	article.IsPublished = article.Status == model.ArticleStatusPublished
+
+	if err := s.repo.Update(ctx, article); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *articleService) AdminDeleteArticle(ctx context.Context, id uint) error {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.Delete(ctx, id)
+}
+
+// invalidateArticleCache 使文章缓存失效（id 与 slug 两个键）
+func (s *articleService) invalidateArticleCache(id uint, slug string) {
+	cache.LocalCacheDelete(fmt.Sprintf("article:%d", id))
+	if slug != "" {
+		cache.LocalCacheDelete(fmt.Sprintf("article:slug:%s", slug))
+	}
 }
 
 // 生成 Slug
