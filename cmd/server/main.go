@@ -32,6 +32,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// Version 由构建脚本通过 -ldflags "-X main.Version=xxx" 注入，未注入时默认 "dev"。
+var Version = "dev"
+
 type Server struct {
 	cfg          *config.Config
 	httpServer   *http.Server
@@ -199,6 +202,11 @@ func (s *Server) runHTTPServer() {
 	// 就绪探针
 	router.GET("/ready", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
+
+	// 版本信息
+	router.GET("/version", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"version": Version})
 	})
 
 	// API 路由
