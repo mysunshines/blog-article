@@ -22,6 +22,7 @@ import (
 	"github.com/mysunshines/gocommon/log"
 	"github.com/mysunshines/gocommon/metrics"
 	commonmiddleware "github.com/mysunshines/gocommon/middleware"
+	"github.com/mysunshines/gocommon/consul"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -61,36 +62,12 @@ func NewServer(cfg *config.Config) *Server {
 	}
 
 	// 自动迁移（分布式锁保护，多实例只有一个执行）
-	const migrationLockKey = "migration:lock:article_service"
-	const migrationLockTTL = 60 * time.Second
-	hostname, _ := os.Hostname()
-	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
-
-	acquired, err := cache.TryLock(context.Background(), migrationLockKey, instanceID, migrationLockTTL)
-	if err != nil {
-		log.Warnf("Failed to acquire migration lock (Redis unavailable): %v, proceeding without lock", err)
-	} else if acquired {
-		log.Infof("Migration lock acquired by instance %s", instanceID)
-		defer func() {
-			if unlockErr := cache.Unlock(context.Background(), migrationLockKey, instanceID); unlockErr != nil {
-				log.Warnf("Failed to release migration lock: %v", unlockErr)
-			}
-		}()
-	} else {
-		log.Info("Migration lock held by another instance, skipping AutoMigrate")
-		time.Sleep(2 * time.Second)
-	}
-
-	if acquired || err != nil {
-		if migrateErr := db.AutoMigrate(&model.Article{}, &model.Category{}, &model.Tag{}, &model.ArticleTag{}, &model.User{}); migrateErr != nil {
-			log.Fatalf("Failed to migrate database: %v", migrateErr)
-		}
-		// 兼容性迁移：将历史已发布文章（status 为空）补齐为 published
-		if fixErr := db.Model(&model.Article{}).
-			Where("status = ? AND is_published = ?", "", true).
-			Update("status", model.ArticleStatusPublished).Error; fixErr != nil {
-			log.Warnf("Failed to backfill article status: %v", fixErr)
-		}
+	runDBMigration(db, "migration:lock:article_service", &model.Article{}, &model.Category{}, &model.Tag{}, &model.ArticleTag{}, &model.User{})
+	// 兼容性迁移：将历史已发布文章（status 为空）补齐为 published
+	if fixErr := db.Model(&model.Article{}).
+		Where("status = ? AND is_published = ?", "", true).
+		Update("status", model.ArticleStatusPublished).Error; fixErr != nil {
+		log.Warnf("Failed to backfill article status: %v", fixErr)
 	}
 
 	// 初始化限流器（类型别名，直接传递）
@@ -169,6 +146,9 @@ func (s *Server) runHTTPServer() {
 	router.Use(commonmiddleware.RecoveryMiddleware())
 	router.Use(commonmiddleware.LoggingMiddleware())
 	router.Use(commonmiddleware.CORSMiddleware())
+	// 限制请求体大小，防大请求体 DoS（配合 MaxRequestBody 常量）
+	router.Use(commonmiddleware.ValidateRequestMiddleware())
+	router.Use(commonmiddleware.CSRFMiddleware())
 	router.Use(commonmiddleware.MetricsMiddleware(constants.ServiceNameArticle))
 	router.Use(commonmiddleware.TraceMiddleware())
 
@@ -221,15 +201,15 @@ func (s *Server) runHTTPServer() {
 			articleGroup.GET("/:id", s.articleHandl.GetArticle)
 			articleGroup.GET("/slug/:slug", s.articleHandl.GetArticleBySlug)
 			articleGroup.GET("/user/:user_id", s.articleHandl.GetUserArticles)
-			articleGroup.POST("", commonmiddleware.JWTValidMiddleware(), s.articleHandl.CreateArticle)
-			articleGroup.PUT("/:id", commonmiddleware.JWTValidMiddleware(), s.articleHandl.UpdateArticle)
-			articleGroup.DELETE("/:id", commonmiddleware.JWTValidMiddleware(), s.articleHandl.DeleteArticle)
+			articleGroup.POST("", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.CreateArticle)
+			articleGroup.PUT("/:id", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.UpdateArticle)
+			articleGroup.DELETE("/:id", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.DeleteArticle)
 			articleGroup.POST("/:id/view", s.articleHandl.IncrementViewCount)
 		}
 
 		// 后台审核管理（管理员专属）
 		adminGroup := api.Group("/admin/articles")
-		adminGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.AdminOnlyMiddleware())
+		adminGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.AdminOnlyMiddleware(), commonmiddleware.ContextMiddleware())
 		{
 			adminGroup.GET("", s.articleHandl.ListArticlesForAdmin)
 			adminGroup.GET("/:id", s.articleHandl.GetArticle)
@@ -285,8 +265,9 @@ func (s *Server) runGRPCServer() {
 		grpc.MaxConcurrentStreams(constants.DefaultGRPCMaxConcurrentStreams),
 	}
 
-	// 高并发增强：添加 unary 拦截器（超时+熔断）
-	grpcOpts = append(grpcOpts, grpc.UnaryInterceptor(s.grpcUnaryInterceptor))
+	// 高并发增强：添加 unary 拦截器（超时+熔断），并叠加 gRPC 鉴权拦截器，
+	// 让 gRPC 层具备与服务端 gin HTTP 一致的身份校验能力（前端主流流量经网关→gRPC）。
+	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(s.grpcUnaryInterceptor, commonmiddleware.GRPCAuthInterceptor()))
 
 	s.grpcServer = grpc.NewServer(grpcOpts...)
 	article.RegisterArticleServiceServer(s.grpcServer, &handler.GrpcArticleHandler{
@@ -334,29 +315,83 @@ func (s *Server) runMetricsServer() {
 }
 
 func main() {
-	// 加载配置（从项目根目录加载）
+	cfg := loadConfig()
+
+	log.Init(cfg.App.LogDir, cfg.App.LogLevel, constants.ServiceNameArticle)
+	metrics.Init()
+
+	server := NewServer(cfg)
+
+	deregister := registerToConsul(cfg)
+	if deregister != nil {
+		defer deregister()
+	}
+
+	defer common_database.Close()
+	defer cache.Close()
+	defer log.StopRotation()
+	if err := server.Run(); err != nil {
+		log.Fatalf("Server error: %v", err)
+	}
+}
+
+// loadConfig 解析配置路径并加载配置，加载失败时终止进程。
+func loadConfig() *config.Config {
 	configPath := os.Getenv(constants.EnvConfigPath)
 	if configPath == "" {
-		// 默认从当前目录加载
 		configPath = constants.DefaultConfigPath
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	return cfg
+}
 
-	// 初始化日志
-	log.Init(cfg.App.LogDir, cfg.App.LogLevel, constants.ServiceNameArticle)
+// registerToConsul 向 Consul 注册本服务实例，返回取消注册函数。
+// 注册失败不致命（降级运行），返回 nil。
+func registerToConsul(cfg *config.Config) func() error {
+	deregister, err := consul.Register(consul.Registration{
+		Name:               cfg.App.Name,
+		ConsulAddress:      cfg.Consul.Address,
+		GRPCPort:           cfg.GRPC.Port,
+		HTTPPort:           cfg.HTTP.Port,
+		CheckInterval:      cfg.Consul.CheckInterval,
+		DeregisterCritical: cfg.Consul.DeregisterCritical,
+	})
+	if err != nil {
+		log.Warnf("failed to register to consul: %v", err)
+		return nil
+	}
+	return deregister
+}
 
-	// 初始化指标
-	metrics.Init()
+// runDBMigration 在分布式锁保护下执行 GORM AutoMigrate。
+// 多实例部署时仅一个实例执行建表/补列，避免并发 ALTER 产生元数据争用。
+// Redis 不可用时降级为直接迁移（GORM AutoMigrate 本身幂等）。
+func runDBMigration(db interface{ AutoMigrate(dst ...interface{}) error }, lockKey string, models ...interface{}) {
+	const migrationLockTTL = 60 * time.Second
+	hostname, _ := os.Hostname()
+	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 
-	// 创建并运行服务器
-	server := NewServer(cfg)
-	defer common_database.Close()
-	defer cache.Close()
-	defer log.StopRotation()
-	if err := server.Run(); err != nil {
-		log.Fatalf("Server error: %v", err)
+	acquired, err := cache.TryLock(context.Background(), lockKey, instanceID, migrationLockTTL)
+	if err != nil {
+		log.Warnf("Failed to acquire migration lock (Redis unavailable): %v, proceeding without lock", err)
+	} else if acquired {
+		log.Infof("Migration lock acquired by instance %s", instanceID)
+		defer func() {
+			if unlockErr := cache.Unlock(context.Background(), lockKey, instanceID); unlockErr != nil {
+				log.Warnf("Failed to release migration lock: %v", unlockErr)
+			}
+		}()
+	} else {
+		log.Info("Migration lock held by another instance, skipping AutoMigrate")
+		time.Sleep(2 * time.Second)
+	}
+
+	if acquired || err != nil {
+		if migrateErr := db.AutoMigrate(models...); migrateErr != nil {
+			log.Fatalf("Failed to migrate database: %v", migrateErr)
+		}
 	}
 }

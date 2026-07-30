@@ -7,6 +7,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/service"
 	article "github.com/mysunshines/blog-article/proto/pb"
 	"github.com/mysunshines/gocommon/constants"
+	"github.com/mysunshines/gocommon/middleware"
 	"github.com/mysunshines/gocommon/util"
 
 	"github.com/sony/gobreaker"
@@ -20,8 +21,13 @@ type GrpcArticleHandler struct {
 }
 
 func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.CreateArticleRequest) (*article.CreateArticleResponse, error) {
+	// 强制要求已登录，并使用经 gRPC 拦截器校验过的身份，杜绝伪造/越权 user_id（IDOR）
+	uid, err := middleware.RequireGRPCAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
 	createdArticle, err := h.Svc.CreateArticle(ctx, &model.CreateArticleRequest{
-		UserID:       uint(req.UserId),
+		UserID:       uid,
 		Title:        req.Title,
 		Content:      req.Content,
 		Summary:      req.Summary,
@@ -94,8 +100,12 @@ func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.List
 }
 
 func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.UpdateArticleRequest) (*article.UpdateArticleResponse, error) {
+	uid, err := middleware.RequireGRPCAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
 	updatedArticle, err := h.Svc.UpdateArticle(ctx, uint(req.ArticleId), &model.UpdateArticleRequest{
-		UserID:       uint(req.UserId),
+		UserID:       uid,
 		Title:        req.Title,
 		Content:      req.Content,
 		Summary:      req.Summary,
@@ -121,7 +131,11 @@ func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.Upd
 }
 
 func (h *GrpcArticleHandler) DeleteArticle(ctx context.Context, req *article.DeleteArticleRequest) (*article.DeleteArticleResponse, error) {
-	err := h.Svc.DeleteArticle(ctx, uint(req.ArticleId), uint(req.UserId))
+	uid, err := middleware.RequireGRPCAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = h.Svc.DeleteArticle(ctx, uint(req.ArticleId), uid)
 	if err != nil {
 		return &article.DeleteArticleResponse{
 			Code:    uint32(article.ArticleErrorCode_ARTICLE_DELETE_FAILED),

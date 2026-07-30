@@ -6,13 +6,13 @@ exclude google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/mysunshines/gocommon v1.1.4
+	github.com/mysunshines/gocommon v1.1.5
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
 	github.com/yuin/goldmark v1.7.8
 	golang.org/x/sync v0.19.0
-	google.golang.org/grpc v1.69.0
-	google.golang.org/protobuf v1.36.1
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1
 )
@@ -60,6 +60,6 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241206012308-a4fef0638583 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260120221211-b8f7ae30c516 // indirect
 	gorm.io/driver/mysql v1.5.7 // indirect
 )
