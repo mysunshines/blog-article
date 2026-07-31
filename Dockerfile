@@ -37,7 +37,7 @@ WORKDIR /app
 
 # 从构建阶段复制二进制文件与配置
 COPY --from=builder /app/article-service-bin ./article-service
-COPY --from=builder /app/article-service/config.yaml .
+COPY --from=builder /app/article-service/config/ ./config/
 
 # 创建非 root 用户
 RUN adduser -D -g '' appuser
