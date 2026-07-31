@@ -20,6 +20,7 @@ type Article struct {
 	Slug          string     `gorm:"uniqueIndex;size:256" json:"slug"`
 	Summary       string     `gorm:"size:512" json:"summary"`
 	Content       string     `gorm:"type:text" json:"content"`
+	ContentHTML   string     `gorm:"-" json:"content_html"` // 由后端渲染并净化的安全 HTML，不入库
 	CoverImage    string     `gorm:"size:256" json:"cover_image"`
 	CategoryID    uint       `gorm:"index" json:"category_id"`
 	ViewCount     int        `gorm:"default:0" json:"view_count"`

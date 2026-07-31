@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mysunshines/blog-article/internal/config"
-	"github.com/mysunshines/blog-article/internal/handler"
+	v1 "github.com/mysunshines/blog-article/internal/handler/v1"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/service"
@@ -42,7 +42,7 @@ type Server struct {
 	grpcServer   *grpc.Server
 	articleSvc   service.ArticleService
 	articleRepo  repository.ArticleRepository
-	articleHandl *handler.ArticleHandler
+	articleHandl *v1.ArticleHandler
 	db           *gorm.DB
 	cb           *gobreaker.CircuitBreaker // 熔断器
 }
@@ -91,7 +91,7 @@ func NewServer(cfg *config.Config) *Server {
 	articleSvc := service.NewArticleService(articleRepo, db)
 
 	// 初始化处理器
-	articleHandl := handler.NewArticleHandler(articleSvc)
+	articleHandl := v1.NewArticleHandler(articleSvc)
 
 	return &Server{
 		cfg:          cfg,
@@ -218,9 +218,18 @@ func (s *Server) runHTTPServer() {
 			adminGroup.POST("/:id/offline", s.articleHandl.OfflineArticle)
 			adminGroup.POST("/:id/publish", s.articleHandl.PublishArticle)
 			adminGroup.PUT("/:id", s.articleHandl.AdminUpdateArticle)
-			adminGroup.DELETE("/:id", s.articleHandl.AdminDeleteArticle)
-		}
+		adminGroup.DELETE("/:id", s.articleHandl.AdminDeleteArticle)
 	}
+
+		// 封面上传：任意登录用户可上传（非管理员专属），经 /admin-api/ 透传复用现有链路。
+		uploadGroup := api.Group("/admin")
+		uploadGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware())
+		uploadGroup.POST("/upload", s.articleHandl.UploadCover)
+	}
+
+	// 静态托管上传的封面图片：GET /api/v1/admin/uploads/<name>
+	// 浏览器通过 /admin-api/uploads/<name> 同源访问（nginx→gateway→httpreverse→此处）。
+	router.Static("/api/v1/admin/uploads", v1.UploadsDir)
 
 	addr := s.cfg.HTTP.Addr()
 
@@ -265,12 +274,17 @@ func (s *Server) runGRPCServer() {
 		grpc.MaxConcurrentStreams(constants.DefaultGRPCMaxConcurrentStreams),
 	}
 
-	// 高并发增强：添加 unary 拦截器（超时+熔断），并叠加 gRPC 鉴权拦截器，
-	// 让 gRPC 层具备与服务端 gin HTTP 一致的身份校验能力（前端主流流量经网关→gRPC）。
-	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(s.grpcUnaryInterceptor, commonmiddleware.GRPCAuthInterceptor()))
+	// 高并发增强：添加 unary 拦截器（超时+熔断），并叠加 gRPC 鉴权/指标/日志拦截器，
+	// 让 gRPC 层具备与服务端 gin HTTP 一致的身份校验与可观测能力（前端主流流量经网关→gRPC）。
+	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(
+		s.grpcUnaryInterceptor,
+		commonmiddleware.GRPCAuthInterceptor(),
+		commonmiddleware.GRPCMetricsInterceptor(constants.ServiceNameArticle),
+		commonmiddleware.GRPCLoggingInterceptor(),
+	))
 
 	s.grpcServer = grpc.NewServer(grpcOpts...)
-	article.RegisterArticleServiceServer(s.grpcServer, &handler.GrpcArticleHandler{
+	article.RegisterArticleServiceServer(s.grpcServer, &v1.GrpcArticleHandler{
 		Svc: s.articleSvc,
 		Cb:  s.cb,
 	})

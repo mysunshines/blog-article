@@ -10,6 +10,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/pkg/errors"
 	"github.com/mysunshines/gocommon/cache"
+	"github.com/mysunshines/gocommon/util"
 
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -115,7 +116,10 @@ func (s *articleService) GetArticle(ctx context.Context, id uint) (*model.Articl
 	if err != nil {
 		return nil, err
 	}
-	return result.(*model.Article), nil
+	article := result.(*model.Article)
+	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
+	article.ContentHTML = util.RenderMarkdown(article.Content)
+	return article, nil
 }
 
 func (s *articleService) GetArticleBySlug(ctx context.Context, slug string) (*model.Article, error) {
@@ -144,7 +148,10 @@ func (s *articleService) GetArticleBySlug(ctx context.Context, slug string) (*mo
 	if err != nil {
 		return nil, err
 	}
-	return result.(*model.Article), nil
+	article := result.(*model.Article)
+	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
+	article.ContentHTML = util.RenderMarkdown(article.Content)
+	return article, nil
 }
 
 func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error) {

@@ -2,13 +2,12 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v6.33.4
-// source: article.proto
+// source: proto/article.proto
 
 package pb
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -20,17 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ArticleService_CreateArticle_FullMethodName      = "/article.ArticleService/CreateArticle"
-	ArticleService_GetArticle_FullMethodName         = "/article.ArticleService/GetArticle"
-	ArticleService_UpdateArticle_FullMethodName      = "/article.ArticleService/UpdateArticle"
-	ArticleService_DeleteArticle_FullMethodName      = "/article.ArticleService/DeleteArticle"
-	ArticleService_ListArticles_FullMethodName       = "/article.ArticleService/ListArticles"
-	ArticleService_GetArticleBySlug_FullMethodName   = "/article.ArticleService/GetArticleBySlug"
-	ArticleService_IncrementViewCount_FullMethodName = "/article.ArticleService/IncrementViewCount"
-	ArticleService_SearchArticles_FullMethodName     = "/article.ArticleService/SearchArticles"
-	ArticleService_GetUserArticles_FullMethodName    = "/article.ArticleService/GetUserArticles"
-	ArticleService_GetCategories_FullMethodName      = "/article.ArticleService/GetCategories"
-	ArticleService_GetTags_FullMethodName            = "/article.ArticleService/GetTags"
+	ArticleService_CreateArticle_FullMethodName      = "/article.v1.ArticleService/CreateArticle"
+	ArticleService_GetArticle_FullMethodName         = "/article.v1.ArticleService/GetArticle"
+	ArticleService_UpdateArticle_FullMethodName      = "/article.v1.ArticleService/UpdateArticle"
+	ArticleService_DeleteArticle_FullMethodName      = "/article.v1.ArticleService/DeleteArticle"
+	ArticleService_ListArticles_FullMethodName       = "/article.v1.ArticleService/ListArticles"
+	ArticleService_GetArticleBySlug_FullMethodName   = "/article.v1.ArticleService/GetArticleBySlug"
+	ArticleService_IncrementViewCount_FullMethodName = "/article.v1.ArticleService/IncrementViewCount"
+	ArticleService_SearchArticles_FullMethodName     = "/article.v1.ArticleService/SearchArticles"
+	ArticleService_GetUserArticles_FullMethodName    = "/article.v1.ArticleService/GetUserArticles"
+	ArticleService_GetCategories_FullMethodName      = "/article.v1.ArticleService/GetCategories"
+	ArticleService_GetTags_FullMethodName            = "/article.v1.ArticleService/GetTags"
 )
 
 // ArticleServiceClient is the client API for ArticleService service.
@@ -449,7 +448,7 @@ func _ArticleService_GetTags_Handler(srv interface{}, ctx context.Context, dec f
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ArticleService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "article.ArticleService",
+	ServiceName: "article.v1.ArticleService",
 	HandlerType: (*ArticleServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -498,5 +497,5 @@ var ArticleService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "article.proto",
+	Metadata: "proto/article.proto",
 }

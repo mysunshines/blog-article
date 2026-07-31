@@ -1,4 +1,6 @@
-package handler
+// Package v1 存放 article-service 的 HTTP API 处理器（v1 版本）。
+// 后续迭代 v2 接口时，新增 internal/handler/v2 包即可，互不干扰。
+package v1
 
 import (
 	"strconv"

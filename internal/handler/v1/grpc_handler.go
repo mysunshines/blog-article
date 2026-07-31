@@ -1,4 +1,4 @@
-package handler
+package v1
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/service"
 	article "github.com/mysunshines/blog-article/proto/pb"
 	"github.com/mysunshines/gocommon/constants"
-	"github.com/mysunshines/gocommon/middleware"
+	commonmiddleware "github.com/mysunshines/gocommon/middleware"
 	"github.com/mysunshines/gocommon/util"
 
 	"github.com/sony/gobreaker"
@@ -22,7 +22,7 @@ type GrpcArticleHandler struct {
 
 func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.CreateArticleRequest) (*article.CreateArticleResponse, error) {
 	// 强制要求已登录，并使用经 gRPC 拦截器校验过的身份，杜绝伪造/越权 user_id（IDOR）
-	uid, err := middleware.RequireGRPCAuth(ctx)
+	uid, err := commonmiddleware.RequireGRPCAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.List
 }
 
 func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.UpdateArticleRequest) (*article.UpdateArticleResponse, error) {
-	uid, err := middleware.RequireGRPCAuth(ctx)
+	uid, err := commonmiddleware.RequireGRPCAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.Upd
 }
 
 func (h *GrpcArticleHandler) DeleteArticle(ctx context.Context, req *article.DeleteArticleRequest) (*article.DeleteArticleResponse, error) {
-	uid, err := middleware.RequireGRPCAuth(ctx)
+	uid, err := commonmiddleware.RequireGRPCAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
