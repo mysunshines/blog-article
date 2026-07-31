@@ -82,7 +82,7 @@ func (h *ArticleHandler) UploadCover(c *gin.Context) {
 	}
 
 	// 返回同源可访问的 URL（nginx→gateway→httpreverse 已代理 /admin-api/ 前缀）。
-	url := "/admin-api/uploads/" + name + ext
+	url := "/admin-api/articles/uploads/" + name + ext
 	response.Success(c, map[string]string{"url": url})
 }
 
