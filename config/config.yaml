@@ -76,3 +76,21 @@ cors:
     - "Content-Length"
   allow_credentials: true
   max_age: 86400
+
+# ============================================================================
+# 可观测性（想法 3 · A+B 统一链路追踪与集中日志）
+# 默认全部关闭（enabled:false），仅配置好基础设施并显式开启后才生效，对现有部署零影响。
+# ============================================================================
+
+# Loki 集中日志（方案 A）：各服务结构化日志异步推送到 Loki，gateway 的
+# GET /admin/trace?trace_id= 据此聚合全链路日志。
+loki:
+  enabled: false
+  url: "http://loki:3100/loki/api/v1/push"
+  tenant_id: ""
+
+# OpenTelemetry 链路追踪（方案 B）：trace 经 OTLP 上报到 otel-collector，
+# 再由 collector 转发到 Tempo/Jaeger。trace_id 即日志中的 trace_id，与 Loki 共用。
+otel:
+  enabled: false
+  endpoint: "otel-collector:4317"
