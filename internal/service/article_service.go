@@ -8,7 +8,7 @@ import (
 
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
-	"github.com/mysunshines/blog-article/pkg/errors"
+	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/gocommon/cache"
 	"github.com/mysunshines/gocommon/util"
 
@@ -19,6 +19,7 @@ import (
 type ArticleService interface {
 	CreateArticle(ctx context.Context, req *model.CreateArticleRequest) (*model.Article, error)
 	GetArticle(ctx context.Context, id uint) (*model.Article, error)
+	GetArticleForAdmin(ctx context.Context, id uint) (*model.Article, error)
 	GetArticleBySlug(ctx context.Context, slug string) (*model.Article, error)
 	UpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error)
 	DeleteArticle(ctx context.Context, id, userID uint) error
@@ -26,7 +27,13 @@ type ArticleService interface {
 	SearchArticles(ctx context.Context, req *model.SearchArticlesRequest) ([]*model.Article, int64, error)
 	GetUserArticles(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
+	LikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
+	CancelLikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
+	GetLikeStatus(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
 	GetCategories(ctx context.Context) ([]*model.Category, error)
+	CreateCategory(ctx context.Context, name, description string, sort int) (*model.Category, error)
+	UpdateCategory(ctx context.Context, id uint, name, description string, sort int) (*model.Category, error)
+	DeleteCategory(ctx context.Context, id uint) error
 	GetTags(ctx context.Context) ([]*model.Tag, error)
 
 	// 后台审核管理（仅管理员调用）
@@ -35,6 +42,7 @@ type ArticleService interface {
 	RejectArticle(ctx context.Context, id uint, reason string) (*model.Article, error)
 	OfflineArticle(ctx context.Context, id uint, reason string) (*model.Article, error)
 	PublishArticle(ctx context.Context, id uint) (*model.Article, error)
+	SubmitArticle(ctx context.Context, id uint) (*model.Article, error)
 	AdminUpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error)
 	AdminDeleteArticle(ctx context.Context, id uint) error
 }
@@ -64,10 +72,13 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 	// 生成 slug
 	slug := generateSlug(req.Title)
 
-	// 初始状态：默认草稿；若请求发布则进入待审核（由管理员审核通过后发布）
-	status := model.ArticleStatusDraft
+	// 先发后审模式：勾选"立即发布"进入待审核(pending, 前台可见待管理员审核)；
+	// 未勾选则存为草稿(draft, 仅作者可见，管理员不可审核)
+	var status string
 	if req.IsPublished {
 		status = model.ArticleStatusPending
+	} else {
+		status = model.ArticleStatusDraft
 	}
 
 	// 构建文章模型
@@ -80,7 +91,6 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 		CoverImage:   req.CoverImage,
 		CategoryID:   req.CategoryID,
 		Status:       status,
-		IsPublished:  status == model.ArticleStatusPublished,
 		IsFeatured:   req.IsFeatured,
 		AllowComment: req.AllowComment,
 	}
@@ -109,6 +119,11 @@ func (s *articleService) GetArticle(ctx context.Context, id uint) (*model.Articl
 		if err != nil {
 			return nil, err
 		}
+		// 公开接口：已发布(published)与待审核(pending, 先发后审前台可见)可展示；
+		// 草稿/已下线/已拒绝一律视为不存在
+		if article.Status != model.ArticleStatusPublished && article.Status != model.ArticleStatusPending {
+			return nil, errors.ArticleNotFound()
+		}
 		// 存入本地缓存
 		cache.LocalCacheSet(key, article)
 		return article, nil
@@ -117,6 +132,17 @@ func (s *articleService) GetArticle(ctx context.Context, id uint) (*model.Articl
 		return nil, err
 	}
 	article := result.(*model.Article)
+	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
+	article.ContentHTML = util.RenderMarkdown(article.Content)
+	return article, nil
+}
+
+// GetArticleForAdmin 后台获取文章详情（不限状态，供审核/编辑使用）
+func (s *articleService) GetArticleForAdmin(ctx context.Context, id uint) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
 	article.ContentHTML = util.RenderMarkdown(article.Content)
 	return article, nil
@@ -140,6 +166,11 @@ func (s *articleService) GetArticleBySlug(ctx context.Context, slug string) (*mo
 		article, err := s.repo.GetBySlug(ctx, slug)
 		if err != nil {
 			return nil, err
+		}
+		// 公开接口：已发布(published)与待审核(pending, 先发后审前台可见)可展示；
+		// 草稿/已下线/已拒绝一律视为不存在
+		if article.Status != model.ArticleStatusPublished && article.Status != model.ArticleStatusPending {
+			return nil, errors.InvalidSlug()
 		}
 		// 存入本地缓存
 		cache.LocalCacheSet(key, article)
@@ -185,8 +216,16 @@ func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.
 	}
 	article.IsFeatured = req.IsFeatured
 	article.AllowComment = req.AllowComment
-	// 发布状态由状态机统一管理（审核通过后才会 published），作者编辑不改变状态
-	article.IsPublished = article.Status == model.ArticleStatusPublished
+	// 发布状态由状态机统一管理：
+	// - is_published=true  → 进入待审核(pending, 先发后审前台可见)，并清空历史拒绝/下线原因
+	// - is_published=false → 仅当原本是草稿(draft)时保持草稿；非草稿态(已发布/待审等)编辑内容不改变状态
+	if req.IsPublished {
+		article.Status = model.ArticleStatusPending
+		article.RejectReason = ""
+		article.OfflineReason = ""
+	} else if article.Status == model.ArticleStatusDraft {
+		article.Status = model.ArticleStatusDraft
+	}
 
 	// 保存更新
 	if err := s.repo.Update(ctx, article); err != nil {
@@ -249,6 +288,88 @@ func (s *articleService) GetUserArticles(ctx context.Context, userID uint, page,
 
 func (s *articleService) IncrementViewCount(ctx context.Context, id uint) (int, error) {
 	return s.repo.IncrementViewCount(ctx, id)
+}
+
+func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
+	return s.repo.LikeArticle(ctx, articleID, userID)
+}
+
+func (s *articleService) CancelLikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
+	return s.repo.CancelLikeArticle(ctx, articleID, userID)
+}
+
+func (s *articleService) GetLikeStatus(ctx context.Context, articleID, userID uint) (int, bool, error) {
+	return s.repo.GetLikeStatus(ctx, articleID, userID)
+}
+
+func (s *articleService) CreateCategory(ctx context.Context, name, description string, sort int) (*model.Category, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.BadRequest("分类名称不能为空")
+	}
+
+	// 查重名
+	var cnt int64
+	if err := s.db.WithContext(ctx).Model(&model.Category{}).Where("name = ?", name).Count(&cnt).Error; err != nil {
+		return nil, errors.Internal("查询分类失败", err)
+	}
+	if cnt > 0 {
+		return nil, errors.BadRequest("分类名称已存在")
+	}
+
+	category := &model.Category{
+		Name:        name,
+		Slug:        generateSlug(name),
+		Description: strings.TrimSpace(description),
+		Sort:        sort,
+	}
+	if err := s.db.WithContext(ctx).Create(category).Error; err != nil {
+		return nil, errors.Internal("创建分类失败", err)
+	}
+
+	// 清除分类缓存，使新建分类立即生效
+	cache.LocalCacheDelete("categories:all")
+	return category, nil
+}
+
+func (s *articleService) UpdateCategory(ctx context.Context, id uint, name, description string, sort int) (*model.Category, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.BadRequest("分类名称不能为空")
+	}
+
+	var existing model.Category
+	if err := s.db.WithContext(ctx).First(&existing, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, errors.NotFound("分类不存在")
+		}
+		return nil, errors.Internal("查询分类失败", err)
+	}
+
+	// 查重名（排除自身）
+	var cnt int64
+	if err := s.db.WithContext(ctx).Model(&model.Category{}).
+		Where("name = ? AND id <> ?", name, id).Count(&cnt).Error; err != nil {
+		return nil, errors.Internal("查询分类失败", err)
+	}
+	if cnt > 0 {
+		return nil, errors.BadRequest("分类名称已存在")
+	}
+
+	cols := map[string]interface{}{
+		"name":        name,
+		"description": strings.TrimSpace(description),
+		"sort":        sort,
+	}
+	if err := s.db.WithContext(ctx).Model(&model.Category{}).Where("id = ?", id).Updates(cols).Error; err != nil {
+		return nil, errors.Internal("更新分类失败", err)
+	}
+
+	cache.LocalCacheDelete("categories:all")
+	if err := s.db.WithContext(ctx).First(&existing, id).Error; err != nil {
+		return nil, errors.Internal("查询更新后的分类失败", err)
+	}
+	return &existing, nil
 }
 
 func (s *articleService) GetCategories(ctx context.Context) ([]*model.Category, error) {
@@ -325,12 +446,12 @@ func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Ar
 	}
 
 	now := time.Now()
-	article.Status = model.ArticleStatusPublished
-	article.IsPublished = true
-	article.PublishedAt = &now
-	article.RejectReason = ""
-
-	if err := s.repo.Update(ctx, article); err != nil {
+	cols := map[string]interface{}{
+		"status":        model.ArticleStatusPublished,
+		"published_at":  &now,
+		"reject_reason": "",
+	}
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
 		return nil, err
 	}
 	s.invalidateArticleCache(id, article.Slug)
@@ -346,11 +467,11 @@ func (s *articleService) RejectArticle(ctx context.Context, id uint, reason stri
 		return nil, errors.BadRequest("仅待审核文章可以拒绝")
 	}
 
-	article.Status = model.ArticleStatusRejected
-	article.IsPublished = false
-	article.RejectReason = reason
-
-	if err := s.repo.Update(ctx, article); err != nil {
+	cols := map[string]interface{}{
+		"status":        model.ArticleStatusRejected,
+		"reject_reason": reason,
+	}
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
 		return nil, err
 	}
 	s.invalidateArticleCache(id, article.Slug)
@@ -366,11 +487,11 @@ func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason str
 		return nil, errors.BadRequest("仅已发布文章可以下线")
 	}
 
-	article.Status = model.ArticleStatusOffline
-	article.IsPublished = false
-	article.OfflineReason = reason
-
-	if err := s.repo.Update(ctx, article); err != nil {
+	cols := map[string]interface{}{
+		"status":         model.ArticleStatusOffline,
+		"offline_reason": reason,
+	}
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
 		return nil, err
 	}
 	s.invalidateArticleCache(id, article.Slug)
@@ -386,14 +507,39 @@ func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Ar
 		return nil, errors.BadRequest("仅已下线文章可以重新发布")
 	}
 
-	now := time.Now()
-	article.Status = model.ArticleStatusPublished
-	article.IsPublished = true
+	cols := map[string]interface{}{
+		"status": model.ArticleStatusPublished,
+	}
 	if article.PublishedAt == nil {
-		article.PublishedAt = &now
+		now := time.Now()
+		cols["published_at"] = &now
+	}
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	return s.repo.GetByID(ctx, id)
+}
+
+// SubmitArticle 提交审核（draft/offline/rejected -> pending）
+// 作者或管理员将草稿/已下线/已拒绝文章提交进入审核队列，供管理员审核通过/拒绝。
+func (s *articleService) SubmitArticle(ctx context.Context, id uint) (*model.Article, error) {
+	article, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if article.Status != model.ArticleStatusDraft &&
+		article.Status != model.ArticleStatusOffline &&
+		article.Status != model.ArticleStatusRejected {
+		return nil, errors.BadRequest("仅草稿、已下线或已拒绝文章可以提交审核")
 	}
 
-	if err := s.repo.Update(ctx, article); err != nil {
+	cols := map[string]interface{}{
+		"status":         model.ArticleStatusPending,
+		"reject_reason":  "",
+		"offline_reason": "",
+	}
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
 		return nil, err
 	}
 	s.invalidateArticleCache(id, article.Slug)
@@ -425,7 +571,6 @@ func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *m
 	}
 	article.IsFeatured = req.IsFeatured
 	article.AllowComment = req.AllowComment
-	article.IsPublished = article.Status == model.ArticleStatusPublished
 
 	if err := s.repo.Update(ctx, article); err != nil {
 		return nil, err
@@ -441,6 +586,31 @@ func (s *articleService) AdminDeleteArticle(ctx context.Context, id uint) error 
 	}
 	s.invalidateArticleCache(id, article.Slug)
 	return s.repo.Delete(ctx, id)
+}
+
+// DeleteCategory 删除分类（软删除）。
+// 仅当该分类下没有任何已发布文章时才允许删除，避免产生悬空文章。
+func (s *articleService) DeleteCategory(ctx context.Context, id uint) error {
+	// 校验分类存在
+	if _, err := s.repo.GetCategory(ctx, id); err != nil {
+		return err
+	}
+
+	// 统计该分类下已发布文章数
+	published, err := s.repo.CountArticlesByCategory(ctx, id, model.ArticleStatusPublished)
+	if err != nil {
+		return err
+	}
+	if published > 0 {
+		return errors.BadRequest("该分类下还有已发布文章，无法删除")
+	}
+
+	// 软删除分类
+	if err := s.repo.DeleteCategory(ctx, id); err != nil {
+		return err
+	}
+	cache.LocalCacheDelete("categories:all")
+	return nil
 }
 
 // invalidateArticleCache 使文章缓存失效（id 与 slug 两个键）

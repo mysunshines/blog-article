@@ -12,7 +12,7 @@ http:
 # gRPC 服务配置
 grpc:
   host: "0.0.0.0"
-  port: 9002
+  port: 9102
 
 # 数据库配置
 database:

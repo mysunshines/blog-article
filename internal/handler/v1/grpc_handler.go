@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 
+	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/service"
 	article "github.com/mysunshines/blog-article/proto/pb"
@@ -12,6 +13,17 @@ import (
 
 	"github.com/sony/gobreaker"
 )
+
+// errCode 从 service 返回的错误中提取业务码并映射为 proto ArticleErrorCode。
+// 若错误为 *errors.AppError，直接取其 Code（与 proto 枚举值对齐）；
+// 否则（未预期错误）回退为 ARTICLE_INTERNAL_ERROR。
+func errCode(err error) uint32 {
+	var ae *errors.AppError
+	if errors.As(err, &ae) {
+		return uint32(ae.Code)
+	}
+	return uint32(article.ArticleErrorCode_ARTICLE_INTERNAL_ERROR)
+}
 
 // GrpcArticleHandler gRPC 文章处理器适配器（支持熔断）
 type GrpcArticleHandler struct {
@@ -34,9 +46,9 @@ func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.Cre
 		CoverImage:   req.CoverImage,
 		CategoryID:   uint(req.CategoryId),
 		Tags:         req.Tags,
-		IsPublished:  req.IsPublished,
 		IsFeatured:   req.IsFeatured,
 		AllowComment: req.AllowComment,
+		IsPublished:  req.IsPublished,
 	})
 
 	if err != nil {
@@ -75,7 +87,6 @@ func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.List
 		Size:        uint(req.PageSize),
 		CategoryID:  uint(req.CategoryId),
 		Tag:         req.Tag,
-		IsPublished: req.IsPublished,
 		OrderBy:     req.OrderBy,
 	})
 
@@ -112,9 +123,9 @@ func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.Upd
 		CoverImage:   req.CoverImage,
 		CategoryID:   uint(req.CategoryId),
 		Tags:         req.Tags,
-		IsPublished:  req.IsPublished,
 		IsFeatured:   req.IsFeatured,
 		AllowComment: req.AllowComment,
+		IsPublished:  req.IsPublished,
 	})
 	if err != nil {
 		return &article.UpdateArticleResponse{
@@ -169,7 +180,7 @@ func (h *GrpcArticleHandler) IncrementViewCount(ctx context.Context, req *articl
 	viewCount, err := h.Svc.IncrementViewCount(ctx, uint(req.ArticleId))
 	if err != nil {
 		return &article.IncrementViewCountResponse{
-			Code:    constants.ErrCodeInternal,
+			Code:    errCode(err),
 			Message: err.Error(),
 		}, nil
 	}
@@ -181,6 +192,45 @@ func (h *GrpcArticleHandler) IncrementViewCount(ctx context.Context, req *articl
 	}, nil
 }
 
+func (h *GrpcArticleHandler) LikeArticle(ctx context.Context, req *article.LikeArticleRequest) (*article.LikeArticleResponse, error) {
+	likeCount, liked, err := h.Svc.LikeArticle(ctx, uint(req.ArticleId), uint(req.UserId))
+	if err != nil {
+		return &article.LikeArticleResponse{Code: constants.ErrCodeInternal, Message: err.Error()}, nil
+	}
+	return &article.LikeArticleResponse{
+		Code:      uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:   "success",
+		LikeCount: uint32(likeCount),
+		Liked:     liked,
+	}, nil
+}
+
+func (h *GrpcArticleHandler) CancelLikeArticle(ctx context.Context, req *article.CancelLikeArticleRequest) (*article.CancelLikeArticleResponse, error) {
+	likeCount, liked, err := h.Svc.CancelLikeArticle(ctx, uint(req.ArticleId), uint(req.UserId))
+	if err != nil {
+		return &article.CancelLikeArticleResponse{Code: constants.ErrCodeInternal, Message: err.Error()}, nil
+	}
+	return &article.CancelLikeArticleResponse{
+		Code:      uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:   "success",
+		LikeCount: uint32(likeCount),
+		Liked:     liked,
+	}, nil
+}
+
+func (h *GrpcArticleHandler) GetLikeStatus(ctx context.Context, req *article.GetLikeStatusRequest) (*article.GetLikeStatusResponse, error) {
+	likeCount, liked, err := h.Svc.GetLikeStatus(ctx, uint(req.ArticleId), uint(req.UserId))
+	if err != nil {
+		return &article.GetLikeStatusResponse{Code: constants.ErrCodeInternal, Message: err.Error()}, nil
+	}
+	return &article.GetLikeStatusResponse{
+		Code:      uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:   "success",
+		LikeCount: uint32(likeCount),
+		Liked:     liked,
+	}, nil
+}
+
 func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.SearchArticlesRequest) (*article.SearchArticlesResponse, error) {
 	result, total, err := h.Svc.SearchArticles(ctx, &model.SearchArticlesRequest{
 		Keyword: req.Keyword,
@@ -189,7 +239,7 @@ func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.Se
 	})
 	if err != nil {
 		return &article.SearchArticlesResponse{
-			Code:    constants.ErrCodeInternal,
+			Code:    errCode(err),
 			Message: err.Error(),
 		}, nil
 	}
@@ -208,10 +258,16 @@ func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.Se
 }
 
 func (h *GrpcArticleHandler) GetUserArticles(ctx context.Context, req *article.GetUserArticlesRequest) (*article.GetUserArticlesResponse, error) {
-	result, total, err := h.Svc.GetUserArticles(ctx, uint(req.UserId), uint(req.Page), uint(req.PageSize))
+	// 安全：身份取自 gRPC 拦截器校验过的 JWT（RequireGRPCAuth），忽略 req.UserId，
+	// 杜绝任意登录用户通过传入他人 user_id 查询其文章（IDOR 越权）。
+	uid, err := commonmiddleware.RequireGRPCAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, total, err := h.Svc.GetUserArticles(ctx, uid, uint(req.Page), uint(req.PageSize))
 	if err != nil {
 		return &article.GetUserArticlesResponse{
-			Code:    constants.ErrCodeInternal,
+			Code:    errCode(err),
 			Message: err.Error(),
 		}, nil
 	}
@@ -233,7 +289,7 @@ func (h *GrpcArticleHandler) GetCategories(ctx context.Context, req *article.Get
 	categories, err := h.Svc.GetCategories(ctx)
 	if err != nil {
 		return &article.GetCategoriesResponse{
-			Code:    constants.ErrCodeInternal,
+			Code:    errCode(err),
 			Message: err.Error(),
 		}, nil
 	}
@@ -263,7 +319,7 @@ func (h *GrpcArticleHandler) GetTags(ctx context.Context, req *article.GetTagsRe
 	tags, err := h.Svc.GetTags(ctx)
 	if err != nil {
 		return &article.GetTagsResponse{
-			Code:    constants.ErrCodeInternal,
+			Code:    errCode(err),
 			Message: err.Error(),
 		}, nil
 	}
@@ -313,11 +369,11 @@ func ConvertToProtoArticle(a *model.Article) *article.Article {
 		ViewCount:    uint32(a.ViewCount),
 		CommentCount: uint32(a.CommentCount),
 		LikeCount:    uint32(a.LikeCount),
-		IsPublished:  a.IsPublished,
 		IsFeatured:   a.IsFeatured,
 		AllowComment: a.AllowComment,
 		CreatedAt:    util.FormatTime(a.CreatedAt),
 		UpdatedAt:    util.FormatTime(a.UpdatedAt),
 		PublishedAt:  publishedAt,
+		Status:       a.Status,
 	}
 }

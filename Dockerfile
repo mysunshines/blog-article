@@ -67,7 +67,7 @@ RUN mkdir -p /app/uploads && chown -R appuser /app/uploads
 USER appuser
 
 # 8082: HTTP/管理接口, 9002: gRPC 业务通信, 9092: Prometheus Metrics
-EXPOSE 8082 9002 9092
+EXPOSE 8082 9102 9092
 
 # 健康检查：每 30s 检查一次，超时 10s，启动后 5s 开始，连续 3 次失败标记 unhealthy
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

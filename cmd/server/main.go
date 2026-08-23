@@ -7,24 +7,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
-	"github.com/mysunshines/blog-article/internal/config"
 	v1 "github.com/mysunshines/blog-article/internal/handler/v1"
-	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/service"
 	article "github.com/mysunshines/blog-article/proto/pb"
 	"github.com/mysunshines/gocommon/cache"
+	goconfig "github.com/mysunshines/gocommon/config"
+	"github.com/mysunshines/gocommon/configcenter"
 	"github.com/mysunshines/gocommon/constants"
-	common_database "github.com/mysunshines/gocommon/database"
+	"github.com/mysunshines/gocommon/consul"
+	"github.com/mysunshines/gocommon/database"
 	"github.com/mysunshines/gocommon/log"
 	"github.com/mysunshines/gocommon/metrics"
-	commonmiddleware "github.com/mysunshines/gocommon/middleware"
-	"github.com/mysunshines/gocommon/consul"
+	"github.com/mysunshines/gocommon/middleware"
 
-	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sony/gobreaker"
 	"google.golang.org/grpc"
@@ -36,45 +36,54 @@ import (
 // Version 由构建脚本通过 -ldflags "-X main.Version=xxx" 注入，未注入时默认 "dev"。
 var Version = "dev"
 
+// 进程级资源句柄，供 shutdown/releaseInfra 在退出时统一释放（避免多处 defer 重复释放）。
+var (
+	metricsCancel context.CancelFunc
+	hotCfg        *configcenter.ServiceConfig
+	deregister    func() error
+)
+
 type Server struct {
-	cfg          *config.Config
-	httpServer   *http.Server
-	grpcServer   *grpc.Server
-	articleSvc   service.ArticleService
-	articleRepo  repository.ArticleRepository
-	articleHandl *v1.ArticleHandler
-	db           *gorm.DB
-	cb           *gobreaker.CircuitBreaker // 熔断器
+	cfg         *goconfig.Config
+	httpServer  *http.Server
+	grpcServer  *grpc.Server
+	articleSvc  service.ArticleService
+	articleRepo repository.ArticleRepository
+	db          *gorm.DB
+	cb          *gobreaker.CircuitBreaker // 熔断器
+
+	// quitCh 供内部 server goroutine 在监听失败时通知 Run 走正常关闭路径，
+	// 避免 log.Fatalf 直接 os.Exit 跳过资源释放。
+	quitCh chan struct{}
 }
 
-func NewServer(cfg *config.Config) *Server {
-	// 初始化数据库（类型别名，直接传递）
-	if err := common_database.Init(&cfg.Database, cfg.App.Env); err != nil {
-		log.Fatalf("Failed to init database: %v", err)
+// initInfra 负责所有外部基础设施的初始化（数据库、Redis、表结构迁移）。
+// 与 NewServer（纯依赖装配）分离，使 main 的启动顺序清晰可控。
+// 初始化失败返回 error（由调用方统一处理，避免直接 os.Exit 导致资源泄漏）。
+func initInfra(cfg *goconfig.Config) (*gorm.DB, error) {
+	// 初始化数据库
+	if err := database.Init(&cfg.Database, cfg.App.Env); err != nil {
+		return nil, fmt.Errorf("failed to init database: %v", err)
 	}
-	db := common_database.GetDB()
+	db := database.GetDB()
 
-	// 初始化 Redis 缓存（必须在 AutoMigrate 之前，用于分布式锁）
+	// 初始化 Redis 缓存（失败降级，不致命）
 	redisCfg := cfg.Redis
 	redisCfg.KeyPrefix = constants.RedisKeyPrefixArticle
 	if err := cache.Init(&redisCfg); err != nil {
 		log.Warnf("Warning: Failed to init Redis: %v", err)
 	}
 
-	// 自动迁移（分布式锁保护，多实例只有一个执行）
-	runDBMigration(db, "migration:lock:article_service", &model.Article{}, &model.Category{}, &model.Tag{}, &model.ArticleTag{}, &model.User{})
-	// 兼容性迁移：将历史已发布文章（status 为空）补齐为 published
-	if fixErr := db.Model(&model.Article{}).
-		Where("status = ? AND is_published = ?", "", true).
-		Update("status", model.ArticleStatusPublished).Error; fixErr != nil {
-		log.Warnf("Failed to backfill article status: %v", fixErr)
-	}
+	return db, nil
+}
 
+// NewServer 仅做依赖装配（限流器/JWT/熔断器/仓储/服务/处理器），不做任何 I/O。
+func NewServer(cfg *goconfig.Config, db *gorm.DB) *Server {
 	// 初始化限流器（类型别名，直接传递）
-	commonmiddleware.InitRateLimiter(&cfg.RateLimit)
+	middleware.InitRateLimiter(&cfg.RateLimit)
 
 	// 初始化 JWT
-	commonmiddleware.InitJWT(cfg.JWT.Secret)
+	middleware.InitJWT(cfg.JWT.Secret)
 
 	// 初始化熔断器
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
@@ -90,16 +99,13 @@ func NewServer(cfg *config.Config) *Server {
 	// 初始化服务层
 	articleSvc := service.NewArticleService(articleRepo, db)
 
-	// 初始化处理器
-	articleHandl := v1.NewArticleHandler(articleSvc)
-
 	return &Server{
-		cfg:          cfg,
-		articleSvc:   articleSvc,
-		articleRepo:  articleRepo,
-		articleHandl: articleHandl,
-		db:           db,
-		cb:           cb,
+		cfg:         cfg,
+		articleSvc:  articleSvc,
+		articleRepo: articleRepo,
+		db:          db,
+		cb:          cb,
+		quitCh:      make(chan struct{}),
 	}
 }
 
@@ -111,14 +117,18 @@ func (s *Server) Run() error {
 	go s.runGRPCServer()
 
 	// 启动 Prometheus 指标服务器
-	if s.cfg.Metrics.Enabled {
+	if goconfig.Get().Metrics.Enabled {
 		go s.runMetricsServer()
 	}
 
-	// 等待信号
+	// 等待信号或内部 server 监听失败
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	select {
+	case <-quit:
+	case <-s.quitCh:
+		log.Errorf("server goroutine failed, initiating shutdown")
+	}
 
 	log.Info("Shutting down server...")
 
@@ -136,175 +146,118 @@ func (s *Server) Run() error {
 	return nil
 }
 
+// runHTTPServer 仅承载运维探活端点（/health、/ready、/version），不暴露任何业务路由。
+// 业务流量（公开/用户/admin 接口）一律走 gRPC（见 runGRPCServer），由 Gateway 经 gRPC 反射代理
+// 转发，本服务不再保留任何 HTTP 业务入口（不再有 gin handler / grpc-gateway 双实现）。
+// 这是「微服务只保留 gRPC」的最终形态：HTTP 端口只用于探针与健康检查，不是业务入口。
 func (s *Server) runHTTPServer() {
-	if s.cfg.App.Env == "production" {
-		gin.SetMode(gin.ReleaseMode)
-	}
-
-	router := gin.New()
-	router.Use(gin.Recovery())
-	router.Use(commonmiddleware.RecoveryMiddleware())
-	router.Use(commonmiddleware.LoggingMiddleware())
-	router.Use(commonmiddleware.CORSMiddleware())
-	// 限制请求体大小，防大请求体 DoS（配合 MaxRequestBody 常量）
-	router.Use(commonmiddleware.ValidateRequestMiddleware())
-	router.Use(commonmiddleware.CSRFMiddleware())
-	router.Use(commonmiddleware.MetricsMiddleware(constants.ServiceNameArticle))
-	router.Use(commonmiddleware.TraceMiddleware())
-
-	// 高并发增强：请求超时中间件
-	router.Use(commonmiddleware.TimeoutMiddleware(30 * time.Second))
-
-	// 高并发增强：限流中间件
-	if s.cfg.RateLimit.Enabled {
-		router.Use(commonmiddleware.RateLimitMiddleware())
-	}
-
-	// 健康检查（带深度检查）
-	router.GET("/health", func(c *gin.Context) {
-		// 检查数据库连接
+	rootMux := http.NewServeMux()
+	// 健康检查（深度检查 db/redis）
+	rootMux.HandleFunc(constants.HealthCheckPath, func(w http.ResponseWriter, r *http.Request) {
 		if sqlDB, _ := s.db.DB(); sqlDB != nil {
 			if err := sqlDB.Ping(); err != nil {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "reason": "db"})
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"status":"unhealthy","reason":"db"}`))
 				return
 			}
 		}
-
-		// 检查 Redis 连接
-		if err := cache.Ping(context.Background()); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "reason": "redis"})
+		if err := cache.Ping(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unhealthy","reason":"redis"}`))
 			return
 		}
-
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-
 	// 就绪探针
-	router.GET("/ready", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	rootMux.HandleFunc(constants.ReadinessPath, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
-
 	// 版本信息
-	router.GET("/version", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"version": Version})
+	rootMux.HandleFunc(constants.VersionPath, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"` + Version + `"}`))
 	})
 
-	// API 路由
-	api := router.Group(constants.APIPathPrefix)
-	{
-		articleGroup := api.Group("/article")
-		{
-			articleGroup.GET("", s.articleHandl.ListArticles)
-			articleGroup.GET("/search", s.articleHandl.SearchArticles)
-			articleGroup.GET("/categories", s.articleHandl.GetCategories)
-			articleGroup.GET("/tags", s.articleHandl.GetTags)
-			articleGroup.GET("/:id", s.articleHandl.GetArticle)
-			articleGroup.GET("/slug/:slug", s.articleHandl.GetArticleBySlug)
-			articleGroup.GET("/user/:user_id", s.articleHandl.GetUserArticles)
-			articleGroup.POST("", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.CreateArticle)
-			articleGroup.PUT("/:id", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.UpdateArticle)
-			articleGroup.DELETE("/:id", commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware(), s.articleHandl.DeleteArticle)
-			articleGroup.POST("/:id/view", s.articleHandl.IncrementViewCount)
-		}
-
-		// 后台审核管理（管理员专属）
-		adminGroup := api.Group("/admin/articles")
-		adminGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.AdminOnlyMiddleware(), commonmiddleware.ContextMiddleware())
-		{
-			adminGroup.GET("", s.articleHandl.ListArticlesForAdmin)
-			adminGroup.GET("/:id", s.articleHandl.GetArticle)
-			adminGroup.POST("/:id/approve", s.articleHandl.ApproveArticle)
-			adminGroup.POST("/:id/reject", s.articleHandl.RejectArticle)
-			adminGroup.POST("/:id/offline", s.articleHandl.OfflineArticle)
-			adminGroup.POST("/:id/publish", s.articleHandl.PublishArticle)
-			adminGroup.PUT("/:id", s.articleHandl.AdminUpdateArticle)
-		adminGroup.DELETE("/:id", s.articleHandl.AdminDeleteArticle)
-	}
-
-		// 封面上传：任意登录用户可上传（非管理员专属），经 /admin-api/ 透传复用现有链路。
-		uploadGroup := api.Group("/admin")
-		uploadGroup.Use(commonmiddleware.JWTValidMiddleware(), commonmiddleware.ContextMiddleware())
-		uploadGroup.POST("/upload", s.articleHandl.UploadCover)
-	}
-
-	// 静态托管上传的封面图片：GET /api/v1/admin/uploads/<name>
-	// 浏览器通过 /admin-api/uploads/<name> 同源访问（nginx→gateway→httpreverse→此处）。
-	router.Static("/api/v1/admin/uploads", v1.UploadsDir)
-
-	addr := s.cfg.HTTP.Addr()
-
-	// 高并发增强：配置 HTTP Server 超时
+	addr := goconfig.Get().HTTP.Addr()
+	h := goconfig.Get().Server.HTTP
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           router,
-		ReadTimeout:       constants.DefaultReadTimeout * time.Second,
-		ReadHeaderTimeout: constants.DefaultReadHeaderTimeout * time.Second,
-		WriteTimeout:      constants.DefaultWriteTimeout * time.Second,
-		IdleTimeout:       constants.DefaultIdleTimeout * time.Second,
+		Handler:           rootMux,
+		ReadTimeout:       time.Duration(h.ReadTimeoutSec) * time.Second,
+		ReadHeaderTimeout: time.Duration(h.ReadHeaderTimeoutSec) * time.Second,
+		WriteTimeout:      time.Duration(h.WriteTimeoutSec) * time.Second,
+		IdleTimeout:       time.Duration(h.IdleTimeoutSec) * time.Second,
 		MaxHeaderBytes:    constants.MaxHeaderBytes,
 	}
 
-	log.Infof("HTTP server starting on %s (timeouts: read=%v, write=%v, idle=%v)", addr,
-		s.httpServer.ReadTimeout, s.httpServer.WriteTimeout, s.httpServer.IdleTimeout)
+	log.Infof("HTTP server (probe-only) starting on %s", addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start HTTP server: %v", err)
+		log.Errorf("Failed to start HTTP server: %v", err)
+		close(s.quitCh)
 	}
 }
 
 func (s *Server) runGRPCServer() {
-	lis, err := net.Listen("tcp", s.cfg.GRPC.Addr())
+	lis, err := net.Listen("tcp", goconfig.Get().GRPC.Addr())
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		log.Errorf("Failed to listen: %v", err)
+		close(s.quitCh)
+		return
 	}
 
-	// 高并发增强：gRPC 选项配置
+	// 高并发增强：gRPC 选项配置（keepalive/并发流取自 config.Server.GRPC，仅启动期生效）
+	g := goconfig.Get().Server.GRPC
 	grpcOpts := []grpc.ServerOption{
 		// 连接超时
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle:     constants.DefaultGRPCMaxConnectionIdle * time.Second,
-			MaxConnectionAge:      constants.DefaultGRPCMaxConnectionAge * time.Second,
-			MaxConnectionAgeGrace: constants.DefaultGRPCMaxConnectionAgeGrace * time.Second,
+			MaxConnectionIdle:     time.Duration(g.MaxConnectionIdle) * time.Second,
+			MaxConnectionAge:      time.Duration(g.MaxConnectionAge) * time.Second,
+			MaxConnectionAgeGrace: time.Duration(g.MaxConnectionAgeGrace) * time.Second,
 		}),
 		// 超时配置
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             constants.DefaultGRPCMinPingInterval * time.Second,
+			MinTime:             time.Duration(g.MinPingInterval) * time.Second,
 			PermitWithoutStream: true,
 		}),
 		// 最大并发连接数
-		grpc.MaxConcurrentStreams(constants.DefaultGRPCMaxConcurrentStreams),
+		grpc.MaxConcurrentStreams(g.MaxConcurrentStreams),
+		// 添加 unary 拦截器（超时+熔断），并叠加 gRPC 鉴权/指标/日志拦截器
+		grpc.ChainUnaryInterceptor(
+			s.grpcUnaryInterceptor,
+			middleware.GRPCAuthInterceptor(),
+			middleware.GRPCMetricsInterceptor(constants.ServiceNameArticle),
+			middleware.GRPCLoggingInterceptor(),
+		),
 	}
 
-	// 高并发增强：添加 unary 拦截器（超时+熔断），并叠加 gRPC 鉴权/指标/日志拦截器，
-	// 让 gRPC 层具备与服务端 gin HTTP 一致的身份校验与可观测能力（前端主流流量经网关→gRPC）。
-	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(
-		s.grpcUnaryInterceptor,
-		commonmiddleware.GRPCAuthInterceptor(),
-		commonmiddleware.GRPCMetricsInterceptor(constants.ServiceNameArticle),
-		commonmiddleware.GRPCLoggingInterceptor(),
-	))
-
 	s.grpcServer = grpc.NewServer(grpcOpts...)
+	// 显式注册 gRPC 业务服务：标准 protobuf 生成的 RegisterXxxServiceServer 不会自动生效，
+	// 必须在此调用一次，否则客户端（gateway 经 Consul 转发）调用会报 unknown method。
+	// GrpcArticleHandler 实现了 article.ArticleServiceServer 接口。
 	article.RegisterArticleServiceServer(s.grpcServer, &v1.GrpcArticleHandler{
 		Svc: s.articleSvc,
 		Cb:  s.cb,
 	})
 	reflection.Register(s.grpcServer)
 
-	log.Infof("gRPC server starting on %s", s.cfg.GRPC.Addr())
+	log.Infof("gRPC server starting on %s", goconfig.Get().GRPC.Addr())
 	if err := s.grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve gRPC: %v", err)
+		log.Errorf("Failed to serve gRPC: %v", err)
+		close(s.quitCh)
 	}
 }
 
-// grpcUnaryInterceptor gRPC 一元拦截器（超时+熔断）
+
+// grpcUnaryInterceptor gRPC 一元拦截器（超时+熔断）。
+// 利用 info.FullMethod 实现按方法差异化超时：列表/搜索等重接口给予更长超时，
+// 避免被统一的短超时误杀；轻量单条查询仍走默认超时。
 func (s *Server) grpcUnaryInterceptor(
 	ctx context.Context,
 	req interface{},
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
-	// 超时控制
-	ctx, cancel := context.WithTimeout(ctx, constants.DefaultGRPCUnaryTimeout*time.Second)
+	// 超时控制（按方法名差异化）
+	ctx, cancel := context.WithTimeout(ctx, middleware.GRPCMethodTimeout(info.FullMethod))
 	defer cancel()
 
 	// 熔断器保护
@@ -318,60 +271,146 @@ func (s *Server) grpcUnaryInterceptor(
 	return handler(ctx, req)
 }
 
+// runMetricsServer 运行指标服务器
 func (s *Server) runMetricsServer() {
-	addr := fmt.Sprintf(":%d", s.cfg.Metrics.Port)
-	http.Handle(s.cfg.Metrics.Path, promhttp.Handler())
+	addr := fmt.Sprintf(":%d", goconfig.Get().Metrics.Port)
+	http.Handle(goconfig.Get().Metrics.Path, promhttp.Handler())
 
-	log.Infof("Metrics server starting on %s%s", addr, s.cfg.Metrics.Path)
+	log.Infof("Metrics server starting on %s%s", addr, goconfig.Get().Metrics.Path)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Errorf("Metrics server error: %v", err)
 	}
 }
 
 func main() {
-	cfg := loadConfig()
+	// 顶层兜底：panic 与 run 返回 err 两条路径收敛到同一个出口，
+	// 自然走到 defer 统一释放资源（避免中途 log.Fatalf/os.Exit 跳过 defer）。
+	var runErr error
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic recovered in main: %v\n%s", r, debug.Stack())
+			runErr = fmt.Errorf("panic: %v", r)
+		}
+		if runErr != nil {
+			log.Errorf("%s exited: %v", constants.ServiceNameArticle, runErr)
+		}
+		releaseInfra()
+		if runErr != nil {
+			os.Exit(1)
+		}
+	}()
 
-	log.Init(cfg.App.LogDir, cfg.App.LogLevel, constants.ServiceNameArticle)
-	metrics.Init()
-
-	server := NewServer(cfg)
-
-	deregister := registerToConsul(cfg)
-	if deregister != nil {
-		defer deregister()
-	}
-
-	defer common_database.Close()
-	defer cache.Close()
-	defer log.StopRotation()
-	if err := server.Run(); err != nil {
-		log.Fatalf("Server error: %v", err)
-	}
+	runErr = run()
 }
 
-// loadConfig 解析配置路径并加载配置，加载失败时终止进程。
-func loadConfig() *config.Config {
-	// 按 APP_ENV 自动选择配置：test → config_test.yaml  production → config_production.yaml
-	// 显式 CONFIG_PATH 优先，未设 APP_ENV 则默认 config.yaml
-	configPath := os.Getenv("CONFIG_PATH")
-	if configPath == "" {
-		env := os.Getenv("APP_ENV")
-		if env != "" && env != "development" {
-			configPath = fmt.Sprintf("config/config_%s.yaml", env)
-		} else {
-			configPath = "config/config.yaml"
+// run 承载全部初始化与运行逻辑。初始化失败统一返回 error（不再直接 os.Exit），
+// 资源释放统一交给 main 的顶层 defer（自然走到 releaseInfra），run 自身不负责释放。
+func run() error {
+	// ① 加载配置（统一使用 gocommon/config，全局可通过 goconfig.Get() 访问）
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// ② 初始化日志
+	log.Init(cfg.App.LogDir, cfg.App.LogLevel, constants.ServiceNameArticle)
+
+	// ③ 初始化指标
+	metrics.Init(constants.ServiceNameArticle)
+	// 周期性刷新运行时指标（内存/goroutine）并上报服务健康状态，消除 dashboard 长期 0 / No data。
+	metricsCtx, metricsCancelFn := context.WithCancel(context.Background())
+	metricsCancel = metricsCancelFn
+	metrics.StartRuntimeMetrics(metricsCtx, 15*time.Second)
+	metrics.StartHealthReporter(metricsCtx, constants.ServiceNameArticle, 10*time.Second, database.Ping, cache.Ping)
+
+	// ④ 配置中心热更：从 Consul KV 拉取热更配置（限流阈值/日志级别等），
+	// 缺失时降级到 config_xxx.yaml 默认值（不致命）。Load 会回写 cfg.RateLimit，
+	// 使下方 NewServer 内的 InitRateLimiter 使用热更值；Watch 在后台监听变更即时生效。
+	hotCfg = configcenter.Init(cfg.Consul.Address, cfg.App.Name, cfg.App.Env)
+	if err := hotCfg.Load(); err != nil && err != configcenter.ErrNotFound {
+		log.Warnf("load hot config failed: %v", err)
+	}
+	go hotCfg.Watch()
+
+	// ⑤ 初始化基础设施（数据库 / Redis / 表迁移）
+	db, err := initInfra(cfg)
+	if err != nil {
+		return err
+	}
+
+	// ⑥ 启用 Consul 服务发现（供本服务调用下游时解析实例）
+	consul.UseConsulDiscovery(cfg.Consul.Address)
+
+	// ⑦ 注册本服务到 Consul
+	deregister, err = registerToConsul(cfg)
+	if err != nil {
+		return err
+	}
+
+	// ⑧ 装配并启动服务（Run 内部监听信号并优雅关闭 HTTP/gRPC）
+	server := NewServer(cfg, db)
+	if err := server.Run(); err != nil {
+		return fmt.Errorf("server error: %v", err)
+	}
+
+	// ⑨ 统一释放资源（顺序：先摘流量→关连接→停热更/指标→停日志）
+	shutdown()
+	return nil
+}
+
+// shutdown 正常退出路径释放：先摘流量，再交由 releaseInfra 释放全局资源。
+func shutdown() {
+	// 1. 先从 Consul 注销，摘除流量（让网关停止转发新请求）
+	if deregister != nil {
+		if err := deregister(); err != nil {
+			log.Warnf("consul deregister: %v", err)
 		}
 	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+	// 2. 释放其余全局资源（热更/指标/连接池/日志）
+	releaseInfra()
+}
+
+// releaseInfra 释放所有"已初始化的全局资源"，幂等可重复调用。
+// 正常退出由 shutdown 调用；异常退出（panic 兜底、初始化失败 return err 的 defer）也调用，
+// 保证无论哪条路径都不会泄漏 Redis/DB 连接、日志句柄或后台指标 goroutine。
+func releaseInfra() {
+	// 停止配置中心热更监听（关闭 fsnotify watcher）
+	if hotCfg != nil {
+		hotCfg.Stop()
 	}
-	return cfg
+
+	// 取消指标采集上下文，停止后台 goroutine
+	if metricsCancel != nil {
+		metricsCancel()
+	}
+
+	// 释放 Redis 连接池
+	if err := cache.Close(); err != nil {
+		log.Warnf("cache close: %v", err)
+	}
+
+	// 关闭数据库连接池
+	if err := database.Close(); err != nil {
+		log.Warnf("database close: %v", err)
+	}
+
+	// 最后停止日志轮转（flush 并关闭日志文件）
+	log.StopRotation()
+}
+
+// loadConfig 通过 gocommon/config 加载配置（已包含 APP_ENV 解析与默认值兜底）。
+// 加载失败时返回 error（由调用方统一处理）。
+func loadConfig() (*goconfig.Config, error) {
+	cfg, err := goconfig.LoadByEnv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %v", err)
+	}
+	return cfg, nil
 }
 
 // registerToConsul 向 Consul 注册本服务实例，返回取消注册函数。
-// 注册失败不致命（降级运行），返回 nil。
-func registerToConsul(cfg *config.Config) func() error {
+// 注册失败视为启动失败，返回 error。
+func registerToConsul(cfg *goconfig.Config) (func() error, error) {
 	deregister, err := consul.Register(consul.Registration{
 		Name:               cfg.App.Name,
 		ConsulAddress:      cfg.Consul.Address,
@@ -381,38 +420,7 @@ func registerToConsul(cfg *config.Config) func() error {
 		DeregisterCritical: cfg.Consul.DeregisterCritical,
 	})
 	if err != nil {
-		log.Warnf("failed to register to consul: %v", err)
-		return nil
+		return nil, fmt.Errorf("failed to register to consul: %v", err)
 	}
-	return deregister
-}
-
-// runDBMigration 在分布式锁保护下执行 GORM AutoMigrate。
-// 多实例部署时仅一个实例执行建表/补列，避免并发 ALTER 产生元数据争用。
-// Redis 不可用时降级为直接迁移（GORM AutoMigrate 本身幂等）。
-func runDBMigration(db interface{ AutoMigrate(dst ...interface{}) error }, lockKey string, models ...interface{}) {
-	const migrationLockTTL = 60 * time.Second
-	hostname, _ := os.Hostname()
-	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
-
-	acquired, err := cache.TryLock(context.Background(), lockKey, instanceID, migrationLockTTL)
-	if err != nil {
-		log.Warnf("Failed to acquire migration lock (Redis unavailable): %v, proceeding without lock", err)
-	} else if acquired {
-		log.Infof("Migration lock acquired by instance %s", instanceID)
-		defer func() {
-			if unlockErr := cache.Unlock(context.Background(), lockKey, instanceID); unlockErr != nil {
-				log.Warnf("Failed to release migration lock: %v", unlockErr)
-			}
-		}()
-	} else {
-		log.Info("Migration lock held by another instance, skipping AutoMigrate")
-		time.Sleep(2 * time.Second)
-	}
-
-	if acquired || err != nil {
-		if migrateErr := db.AutoMigrate(models...); migrateErr != nil {
-			log.Fatalf("Failed to migrate database: %v", migrateErr)
-		}
-	}
+	return deregister, nil
 }

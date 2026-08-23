@@ -4,17 +4,49 @@ package article.v1;
 
 option go_package = "github.com/mysunshines/blog-article/proto/pb";
 
+// ============================================================================
+// gRPC Contract (source of truth for article-service)
+// ----------------------------------------------------------------------------
+// 部署形态：article-service 仅暴露纯 gRPC（默认 9002），不再提供业务 HTTP 入口。
+//   - HTTP 8082 端口仅保留健康检查/就绪/版本等探针端点（/health /ready /version）。
+//   - 文件上传统一上提到 Gateway 层（Gateway 接收 multipart 后存 MinIO 并返回
+//     公共读 URL），本服务不提供上传/静态托管接口。
+//
+// 前端访问（经 Gateway 反射代理 /api/v1/*）：
+//   - Gateway 按 URL 末段 snake_case 推导 gRPC 方法名（如 list_articles_for_admin
+//     -> ListArticlesForAdmin），按首段 resource 推导下游服务（article -> article-service）。
+//   - 鉴权约定：
+//       "公开"   = 无需鉴权
+//       "登录"   = 需 JWT（由 Gateway 透传 Authorization 到 gRPC metadata）
+//       "管理员" = 需 JWT + 管理员角色（handler 内 RequireGRPCAdmin 校验）
+//   - 参数位置：GET 走 query string，其余方法走 request body（Gateway 不读路径参数）。
+//
+// 备注：本 proto 不再包含 google.api.http 注解——HTTP 路由由 Gateway 反射代理按约定
+//       推导，而非 grpc-gateway 代码生成。
+// ============================================================================
+
+
 // 错误码定义 (区间: 30000-39999)
 enum ArticleErrorCode {
     ARTICLE_SUCCESS = 0;
+    // ARTICLE_INTERNAL_ERROR 复用 gocommon 通用内部错误码 10005，
+    // 供未预期错误 / errors.Internal 兜底映射，与通用码区间对齐。
+    ARTICLE_INTERNAL_ERROR = 10005;
     ARTICLE_NOT_FOUND = 30001;
     ARTICLE_CREATE_FAILED = 30011;
     ARTICLE_UPDATE_FAILED = 30012;
     ARTICLE_DELETE_FAILED = 30013;
     ARTICLE_LIST_FAILED = 30014;
+
+    // 权限与校验类（通用码 10001-10008 由 gocommon 定义，此处补充业务细化码）
+    ARTICLE_PERMISSION_DENIED = 30015;
+    ARTICLE_CATEGORY_NOT_FOUND = 30016;
+    ARTICLE_TAG_NOT_FOUND = 30017;
+    ARTICLE_INVALID_SLUG = 30018;
 }
 
 service ArticleService {
+    // 公开 / 登录接口（方法名即 Gateway /api/v1 反射代理推导的 gRPC 方法）
     rpc CreateArticle(CreateArticleRequest) returns (CreateArticleResponse);
     rpc GetArticle(GetArticleRequest) returns (GetArticleResponse);
     rpc UpdateArticle(UpdateArticleRequest) returns (UpdateArticleResponse);
@@ -22,10 +54,29 @@ service ArticleService {
     rpc ListArticles(ListArticlesRequest) returns (ListArticlesResponse);
     rpc GetArticleBySlug(GetArticleBySlugRequest) returns (GetArticleBySlugResponse);
     rpc IncrementViewCount(IncrementViewCountRequest) returns (IncrementViewCountResponse);
+    rpc LikeArticle(LikeArticleRequest) returns (LikeArticleResponse);
+    rpc CancelLikeArticle(CancelLikeArticleRequest) returns (CancelLikeArticleResponse);
+    rpc GetLikeStatus(GetLikeStatusRequest) returns (GetLikeStatusResponse);
     rpc SearchArticles(SearchArticlesRequest) returns (SearchArticlesResponse);
     rpc GetUserArticles(GetUserArticlesRequest) returns (GetUserArticlesResponse);
     rpc GetCategories(GetCategoriesRequest) returns (GetCategoriesResponse);
     rpc GetTags(GetTagsRequest) returns (GetTagsResponse);
+
+    // --------------------------- 后台管理接口（管理员，需 RequireGRPCAdmin） ---------------------------
+    rpc ListArticlesForAdmin(ListArticlesForAdminRequest) returns (ListArticlesForAdminResponse);
+    rpc GetArticleForAdmin(GetArticleForAdminRequest) returns (GetArticleForAdminResponse);
+    rpc ApproveArticle(ApproveArticleRequest) returns (ApproveArticleResponse);
+    rpc RejectArticle(RejectArticleRequest) returns (RejectArticleResponse);
+    rpc OfflineArticle(OfflineArticleRequest) returns (OfflineArticleResponse);
+    rpc PublishArticle(PublishArticleRequest) returns (PublishArticleResponse);
+    rpc SubmitArticle(SubmitArticleRequest) returns (SubmitArticleResponse);
+    rpc AdminUpdateArticle(AdminUpdateArticleRequest) returns (AdminUpdateArticleResponse);
+    rpc AdminDeleteArticle(AdminDeleteArticleRequest) returns (AdminDeleteArticleResponse);
+
+    // --------------------------- 分类管理（管理员，需 RequireGRPCAdmin） ---------------------------
+    rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
+    rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
+    rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
 }
 
 message Article {
@@ -43,12 +94,12 @@ message Article {
     uint32 view_count = 12;
     uint32 comment_count = 13;
     uint32 like_count = 14;
-    bool is_published = 15;
     bool is_featured = 16;
     bool allow_comment = 17;
     string created_at = 18;
     string updated_at = 19;
     string published_at = 20;
+    string status = 21; // 文章状态: draft/pending/published/offline/rejected
 }
 
 message Category {
@@ -78,9 +129,10 @@ message CreateArticleRequest {
     string cover_image = 5;
     uint32 category_id = 6;
     repeated string tags = 7;
-    bool is_published = 8;
     bool is_featured = 9;
     bool allow_comment = 10;
+    // true=立即发布(进入待审核 pending, 先发后审可见); false/缺省=存为草稿 draft(仅作者可见)
+    bool is_published = 11;
 }
 
 message CreateArticleResponse {
@@ -108,9 +160,10 @@ message UpdateArticleRequest {
     string cover_image = 6;
     uint32 category_id = 7;
     repeated string tags = 8;
-    bool is_published = 9;
     bool is_featured = 10;
     bool allow_comment = 11;
+    // true=保存并立即发布(转 pending); false=仅保存草稿(draft, 不改变已有的非草稿状态时保持原状由调用方决定)
+    bool is_published = 12;
 }
 
 message UpdateArticleResponse {
@@ -134,7 +187,6 @@ message ListArticlesRequest {
     uint32 page_size = 2;
     uint32 category_id = 3;
     string tag = 4;
-    bool is_published = 5;
     string order_by = 6;
 }
 
@@ -163,6 +215,43 @@ message IncrementViewCountResponse {
     uint32 code = 1;
     string message = 2;
     uint32 view_count = 3;
+}
+
+// 文章点赞
+message LikeArticleRequest {
+    uint32 article_id = 1;
+    uint32 user_id = 2;
+}
+
+message LikeArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    uint32 like_count = 3;
+    bool liked = 4;
+}
+
+message CancelLikeArticleRequest {
+    uint32 article_id = 1;
+    uint32 user_id = 2;
+}
+
+message CancelLikeArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    uint32 like_count = 3;
+    bool liked = 4;
+}
+
+message GetLikeStatusRequest {
+    uint32 article_id = 1;
+    uint32 user_id = 2;
+}
+
+message GetLikeStatusResponse {
+    uint32 code = 1;
+    string message = 2;
+    uint32 like_count = 3;
+    bool liked = 4;
 }
 
 message SearchArticlesRequest {
@@ -205,4 +294,143 @@ message GetTagsResponse {
     uint32 code = 1;
     string message = 2;
     repeated Tag tags = 3;
+}
+
+// --------------------------- 后台管理接口 message ---------------------------
+
+message ListArticlesForAdminRequest {
+    string status = 1;   // 按状态筛选：pending/published/offline/rejected/draft，空=全部
+    uint32 page = 2;
+    uint32 page_size = 3;
+}
+
+message ListArticlesForAdminResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Article articles = 3;
+    uint32 total = 4;
+}
+
+message GetArticleForAdminRequest {
+    uint32 article_id = 1;
+}
+
+message GetArticleForAdminResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message ApproveArticleRequest {
+    uint32 article_id = 1;
+}
+
+message ApproveArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message RejectArticleRequest {
+    uint32 article_id = 1;
+    string reason = 2;
+}
+
+message RejectArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message OfflineArticleRequest {
+    uint32 article_id = 1;
+    string reason = 2;
+}
+
+message OfflineArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message PublishArticleRequest {
+    uint32 article_id = 1;
+}
+
+message PublishArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message SubmitArticleRequest {
+    uint32 article_id = 1;
+}
+
+message SubmitArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message AdminUpdateArticleRequest {
+    uint32 article_id = 1;
+    string title = 2;
+    string content = 3;
+    string summary = 4;
+    string cover_image = 5;
+    uint32 category_id = 6;
+    bool is_featured = 7;
+    bool allow_comment = 8;
+}
+
+message AdminUpdateArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    Article article = 3;
+}
+
+message AdminDeleteArticleRequest {
+    uint32 article_id = 1;
+}
+
+message AdminDeleteArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+}
+
+// --------------------------- 分类管理 message ---------------------------
+
+message CreateCategoryRequest {
+    string name = 1;
+    string description = 2;
+    uint32 sort = 3;
+}
+
+message CreateCategoryResponse {
+    uint32 code = 1;
+    string message = 2;
+    Category category = 3;
+}
+
+message UpdateCategoryRequest {
+    uint32 category_id = 1;
+    string name = 2;
+    string description = 3;
+    uint32 sort = 4;
+}
+
+message UpdateCategoryResponse {
+    uint32 code = 1;
+    string message = 2;
+    Category category = 3;
+}
+
+message DeleteCategoryRequest {
+    uint32 category_id = 1;
+}
+
+message DeleteCategoryResponse {
+    uint32 code = 1;
+    string message = 2;
 }

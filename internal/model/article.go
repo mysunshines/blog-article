@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // 文章状态机
@@ -26,15 +28,15 @@ type Article struct {
 	ViewCount     int        `gorm:"default:0" json:"view_count"`
 	CommentCount  int        `gorm:"default:0" json:"comment_count"`
 	LikeCount     int        `gorm:"default:0" json:"like_count"`
-	IsPublished   bool       `gorm:"default:false" json:"is_published"`
 	Status        string     `gorm:"size:16;default:'draft'" json:"status"`
 	RejectReason  string     `gorm:"size:256" json:"reject_reason"`
 	OfflineReason string     `gorm:"size:256" json:"offline_reason"`
 	IsFeatured    bool       `gorm:"default:false" json:"is_featured"`
 	AllowComment  bool       `gorm:"default:true" json:"allow_comment"`
-	PublishedAt   *time.Time `json:"published_at"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	PublishedAt   *time.Time  `json:"published_at"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// 关联
 	User     User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
@@ -47,15 +49,16 @@ func (Article) TableName() string {
 }
 
 type Category struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	Name         string    `gorm:"size:64" json:"name"`
-	Slug         string    `gorm:"uniqueIndex;size:64" json:"slug"`
-	Description  string    `gorm:"size:256" json:"description"`
-	ParentID     uint      `gorm:"index" json:"parent_id"`
-	Sort         int       `gorm:"default:0" json:"sort"`
-	ArticleCount int       `gorm:"default:0" json:"article_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uint           `gorm:"primaryKey" json:"id"`
+	Name         string         `gorm:"size:64" json:"name"`
+	Slug         string         `gorm:"uniqueIndex;size:64" json:"slug"`
+	Description  string         `gorm:"size:256" json:"description"`
+	ParentID     uint           `gorm:"index" json:"parent_id"`
+	Sort         int            `gorm:"default:0" json:"sort"`
+	ArticleCount int            `gorm:"default:0" json:"article_count"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (Category) TableName() string {
@@ -105,9 +108,10 @@ type CreateArticleRequest struct {
 	CoverImage   string   `json:"cover_image"`
 	CategoryID   uint     `json:"category_id"`
 	Tags         []string `json:"tags"`
-	IsPublished  bool     `json:"is_published"`
 	IsFeatured   bool     `json:"is_featured"`
 	AllowComment bool     `json:"allow_comment"`
+	// 是否立即发布：true=进入待审核(pending)，false/缺省=存为草稿(draft)
+	IsPublished bool `json:"is_published"`
 }
 
 type UpdateArticleRequest struct {
@@ -118,19 +122,19 @@ type UpdateArticleRequest struct {
 	CoverImage   string   `json:"cover_image"`
 	CategoryID   uint     `json:"category_id"`
 	Tags         []string `json:"tags"`
-	IsPublished  bool     `json:"is_published"`
 	IsFeatured   bool     `json:"is_featured"`
 	AllowComment bool     `json:"allow_comment"`
+	// 是否立即发布/提交审核：true=转 pending，false=仅保存草稿态
+	IsPublished bool `json:"is_published"`
 }
 
 type ListArticlesRequest struct {
-	Page        uint   `form:"page"`
-	Size        uint   `form:"size"`
-	CategoryID  uint   `form:"category_id"`
-	Tag         string `form:"tag"`
-	IsPublished bool   `form:"is_published"`
-	OrderBy     string `form:"order_by"`
-	UserID      uint   `form:"user_id"`
+	Page       uint   `form:"page"`
+	Size       uint   `form:"size"`
+	CategoryID uint   `form:"category_id"`
+	Tag        string `form:"tag"`
+	OrderBy    string `form:"order_by"`
+	UserID     uint   `form:"user_id"`
 }
 
 type SearchArticlesRequest struct {

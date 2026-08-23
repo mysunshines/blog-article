@@ -6,7 +6,7 @@
 
 **端口配置**:
 - HTTP: 8082
-- gRPC: 9002
+- gRPC: 9102
 - Metrics: 9092
 
 ## 二、技术栈
@@ -14,8 +14,7 @@
 | 类别 | 技术 |
 |------|------|
 | 语言 | Go 1.21+ |
-| Web框架 | Gin |
-| RPC框架 | gRPC + Protobuf |
+| RPC框架 | gRPC + Protobuf（**业务层纯 gRPC**；HTTP 仅保留 `/health`、`/ready`、`/version` 探活端口，另提供 grpc-gateway 调试端口 8084 用于联调/契约验证，无 gin 业务路由） |
 | 数据库 | MySQL 8.0 |
 | 缓存 | Redis (本地缓存 + 分布式缓存) |
 | 监控 | Prometheus |
@@ -50,7 +49,9 @@ article-service/
 
 ## 四、API 列表
 
-### 4.1 HTTP API
+### 4.1 gRPC API（经网关 `/api/v1` 与 `/admin-api` 反射代理）
+
+> 业务层纯 gRPC，下表路径为网关反射代理入口（`/api/v1/article/<snake_method>` / `/admin-api/articles/<snake_method>`），实际对应 `article.v1.ArticleService` 的 gRPC 方法。
 
 | 方法 | 路径 | 描述 | 认证 |
 |------|------|------|------|
@@ -63,8 +64,8 @@ page: int,            // int, 选填, 页码, 默认1
 size: int,            // int, 选填, 每页数量, 默认10, 最大100
 category_id: uint,    // uint, 选填, 分类ID
 tag: string,          // string, 选填, 标签名
-is_published: bool,   // bool, 选填, 是否只显示已发布
 order_by: string,     // string, 选填, 排序字段 (created_at/view_count/like_count/published_at)
+// 注意：公开列表由服务端强制只返回 status='published' 的文章，不依赖客户端传参
 user_id: uint         // uint, 选填, 作者ID
 ```
 
@@ -99,12 +100,9 @@ id: int,              // int, 必填, 文章ID
 slug: string,         // string, 必填, 文章Slug (URL友好标识)
 ```
 
-#### 4.1.7 GET `/api/v1/article/user/:user_id` - 用户文章列表
+#### 4.1.7 GET `/api/v1/article/get_user_articles` - 当前用户文章列表
 
-**路径参数**:
-```
-user_id: int,         // int, 必填, 用户ID
-```
+> 注意：用户身份从 JWT 提取，不信任 URL 参数（避免越权查询他人文章），需登录。
 
 **查询参数 (Query Parameters)**:
 ```
@@ -128,7 +126,6 @@ Authorization: Bearer <token>     // string, 必填, JWT Token
     "cover_image": "string",       // string, 选填, 封面图片URL
     "category_id": "uint",        // uint, 选填, 分类ID
     "tags": ["string"],            // []string, 选填, 标签名数组
-    "is_published": "bool",       // bool, 选填, 是否发布
     "is_featured": "bool",        // bool, 选填, 是否精选
     "allow_comment": "bool"       // bool, 选填, 是否允许评论
 }
@@ -155,7 +152,6 @@ id: int,              // int, 必填, 文章ID
     "cover_image": "string",       // string, 选填, 封面图片URL
     "category_id": "uint",        // uint, 选填, 分类ID
     "tags": ["string"],            // []string, 选填, 标签名数组
-    "is_published": "bool",       // bool, 选填, 是否发布
     "is_featured": "bool",        // bool, 选填, 是否精选
     "allow_comment": "bool"       // bool, 选填, 是否允许评论
 }
@@ -327,7 +323,9 @@ service ArticleService {
 | `goroutine_count` | Gauge | - | Goroutine数量 |
 | `panic_counter_total` | Counter | service | Panic次数 |
 | `mysql_slow_queries_total` | Counter | - | MySQL慢查询数 |
-| `redis_hit_rate` | Gauge | - | Redis命中率 |
+| `redis_cache_hits_total` | Counter | - | Redis缓存命中次数 |
+| `redis_cache_misses_total` | Counter | - | Redis缓存未命中次数 |
+| Redis命中率(PromQL) | - | - | `sum(rate(redis_cache_hits_total[5m])) / clamp_min(sum(rate(redis_cache_hits_total[5m])) + sum(rate(redis_cache_misses_total[5m])), 0)` |
 | `redis_hot_keys_total` | Counter | key | 热键访问次数 |
 | `cache_operations_total` | Counter | operation, status | 缓存操作数 |
 | `db_operations_total` | Counter | operation, status | 数据库操作数 |
@@ -844,13 +842,24 @@ func (cb *CircuitBreaker) allowRequest() bool {
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 八、中间件链
+## 八、中间件链（gRPC 拦截器 + 探活 HTTP）
 
+业务层纯 gRPC，HTTP 仅保留探活端口（无 gin 业务路由）；另起 grpc-gateway 调试端口（默认 8084，常量 `GatewayDebugPortArticle`，可由 `ARTICLE_GW_DEBUG_PORT` 覆盖）将 HTTP 代理到本地 gRPC 用于联调。
+
+```text
+gRPC 拦截器链（grpc.ChainUnaryInterceptor）：
+  grpcUnaryInterceptor       10s 超时 + gobreaker 熔断
+  → GRPCAuthInterceptor()    从 metadata 校验 JWT，注入 user_id/role/username 到 ctx
+  → GRPCMetricsInterceptor() RPC 级 QPS/延迟/错误
+  → GRPCLoggingInterceptor() 记录 RPC 方法/对端/耗时/错误
+
+handler 内鉴权：
+  读操作（列表/详情）                      公开
+  写操作（Create/Update/Delete 等）        RequireGRPCAuth(ctx)  // 已登录用户
+  管理方法（Admin*）                       requireGRPCAdmin()  // 仅管理员（RoleAdmin）
 ```
-请求 → RecoveryMiddleware → LoggingMiddleware → CORSMiddleware 
-    → MetricsMiddleware → TraceMiddleware → TimeoutMiddleware(30s)
-    → RateLimitMiddleware → JWTValidMiddleware → Handler → Response
-```
+
+探活 HTTP（`runHTTPServer`，`net/http` mux，无业务路由）：`/health`、`/ready`、`/version`。
 
 ## 九、数据库模型
 
@@ -869,7 +878,6 @@ func (cb *CircuitBreaker) allowRequest() bool {
 | view_count | INT UNSIGNED | DEFAULT 0 | 浏览数 |
 | comment_count | INT UNSIGNED | DEFAULT 0 | 评论数 |
 | like_count | INT UNSIGNED | DEFAULT 0 | 点赞数 |
-| is_published | BOOLEAN | DEFAULT FALSE | 是否发布 |
 | is_featured | BOOLEAN | DEFAULT FALSE | 是否精选 |
 | allow_comment | BOOLEAN | DEFAULT TRUE | 是否允许评论 |
 | published_at | TIMESTAMP | NULL | 发布时间 |
@@ -883,7 +891,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 | idx_user_id | 普通 | user_id | 否 | 用户文章列表查询 |
 | idx_slug | 唯一 | slug | 是 | Slug精确查询 |
 | idx_category_id | 普通 | category_id | 否 | 分类文章列表查询 |
-| idx_is_published | 普通 | is_published | 否 | 筛选已发布文章 |
+| idx_status | 普通 | status | 否 | 按状态筛选（公开列表只查 published） |
 | idx_created_at | 普通 | created_at | 否 | 创建时间排序 |
 | idx_view_count | 普通 | view_count | 否 | 浏览数排序 |
 | idx_like_count | 普通 | like_count | 否 | 点赞数排序 |
@@ -964,7 +972,7 @@ GORM 是 Go 语言中最流行的 ORM 库之一，采用分层架构设计，将
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
 │  │                    链式 API (Chainable API)                            │ │
 │  │                                                                        │ │
-│  │   db.Where("is_published = ?", true).                                 │ │
+│  │   db.Where("status = ?", "published).                                 │ │
 │  │      Order("view_count desc").                                         │ │
 │  │      Preload("Tags").                                                 │ │
 │  │      Find(&articles)                                                   │ │
@@ -1048,7 +1056,7 @@ func (db *DB) Find(dest interface{}, conds ...interface{}) *DB {
 │  ──────────                                                                 │
 │                                                                             │
 │  db.Select("id, title").                                                   │
-│     Where("is_published = ?", true).                                       │
+│     Where("status = ?", "published).                                       │
 │     Order("view_count desc").                                               │
 │     Limit(20).                                                              │
 │     Find(&articles)                                                         │
@@ -1077,7 +1085,7 @@ func (db *DB) Find(dest interface{}, conds ...interface{}) *DB {
 │  4. 执行 SQL                                                                 │
 │  ──────────                                                                 │
 │                                                                             │
-│  SELECT id, title FROM articles WHERE is_published = true                   │
+│  SELECT id, title FROM articles WHERE status = 'published'                   │
 │  ORDER BY view_count DESC LIMIT 20                                          │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1173,7 +1181,7 @@ type Article struct {
 ```go
 // 用户代码
 var articles []Article
-db.Where("is_published = ?", true).Find(&articles)
+db.Where("status = ?", "published).Find(&articles)
 
 // 内部执行流程
 func (db *DB) Find(dest interface{}, conds ...interface{}) *DB {
@@ -1198,7 +1206,7 @@ func (db *DB) Create(value interface{}, opts ...Option) *DB {
 
 ```go
 // 用户代码
-db.Model(&article).Where("is_published = ?", true).Update("view_count", gorm.Expr("view_count + 1"))
+db.Model(&article).Where("status = ?", "published).Update("view_count", gorm.Expr("view_count + 1"))
 
 // 内部执行流程
 func (db *DB) Update(column string, value interface{}) *DB {
@@ -1265,10 +1273,10 @@ func (a *Article) AfterCreate(tx *gorm.DB) error {
 ```go
 // 预加载文章的标签和分类
 var articles []Article
-db.Preload("Tags").Preload("Category").Where("is_published = ?", true).Find(&articles)
+db.Preload("Tags").Preload("Category").Where("status = ?", "published).Find(&articles)
 
 // 生成的 SQL:
-// SELECT * FROM articles WHERE is_published = true;
+// SELECT * FROM articles WHERE status = 'published';
 // SELECT * FROM tags JOIN article_tags ON tags.id = article_tags.tag_id 
 //        WHERE article_tags.article_id IN (1, 2, 3, ...);
 // SELECT * FROM categories WHERE id IN (1, 2, ...);
@@ -1372,7 +1380,7 @@ tx.Commit()
 | 使用 `Preload` 代替 `Joins` | 避免 N+1 问题 | `Preload("Tags").Preload("Category")` |
 | 使用 `First`/`Take` 代替 `Find` | 单条查询更高效 | `db.First(&article, id)` |
 | 批量插入使用 `CreateInBatches` | 减少 SQL 执行次数 | `db.CreateInBatches(articles, 100)` |
-| 使用 `Count` 统计总数 | 分页场景 | `db.Model(&Article{}).Where("is_published = ?", true).Count(&total)` |
+| 使用 `Count` 统计总数 | 分页场景 | `db.Model(&Article{}).Where("status = ?", "published).Count(&total)` |
 | 使用 `FindInBatches` 处理大量数据 | 分批处理避免内存溢出 | `db.FindInBatches(&results, 1000, func(tx *gorm.DB, batch int) error {...})` |
 
 ## 十一、API SQL 与索引分析
@@ -1409,13 +1417,13 @@ SELECT * FROM articles WHERE slug = ? LIMIT 1
 ```sql
 -- 基础查询
 SELECT * FROM articles 
-WHERE is_published = true
+WHERE status = 'published'
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
 
 -- 带分类筛选
 SELECT * FROM articles 
-WHERE category_id = ? AND is_published = true
+WHERE category_id = ? AND status = 'published'
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
 
@@ -1423,7 +1431,7 @@ LIMIT ? OFFSET ?
 SELECT * FROM articles
 JOIN article_tags ON articles.id = article_tags.article_id
 JOIN tags ON article_tags.tag_id = tags.id
-WHERE tags.name = ? AND is_published = true
+WHERE tags.name = ? AND status = 'published'
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
 ```
@@ -1431,7 +1439,7 @@ LIMIT ? OFFSET ?
 | SQL条件 | 命中索引 | 说明 |
 |---------|----------|------|
 | `category_id = ?` | idx_category_id | 分类索引 |
-| `is_published = true` | idx_is_published | 发布状态索引 |
+| `status = 'published'` | idx_status | 发布状态索引 |
 | `ORDER BY created_at` | idx_created_at | 创建时间索引 |
 | `tags.name = ?` | idx_name (tags表) | 标签名索引 |
 | `article_tags.article_id` | PRIMARY (article_tags) | 复合主键 |
@@ -1445,7 +1453,7 @@ LIMIT ? OFFSET ?
 **执行的SQL**:
 ```sql
 SELECT * FROM articles
-WHERE is_published = true 
+WHERE status = 'published' 
   AND (title LIKE ? OR content LIKE ? OR summary LIKE ?)
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
@@ -1453,7 +1461,7 @@ LIMIT ? OFFSET ?
 
 | SQL条件 | 命中索引 | 说明 |
 |---------|----------|------|
-| `is_published = true` | idx_is_published | 发布状态索引 |
+| `status = 'published'` | idx_status | 发布状态索引 |
 | `title LIKE '%keyword%'` | idx_fulltext | 全文索引（可优化） |
 | `ORDER BY created_at` | idx_created_at | 创建时间索引 |
 
@@ -1549,3 +1557,24 @@ DELETE FROM articles WHERE id = ?
 | `id = ?` | PRIMARY (articles) | 主键查询 |
 | `article_id = ?` | PRIMARY (article_tags) | 复合主键删除 |
 | `id = ?` | PRIMARY (categories) | 分类文章数更新 |
+
+## 进程退出与资源释放
+
+服务在 `cmd/server/main.go` 中统一处理退出流程：监听 `SIGINT`/`SIGTERM`，由 `Server.Run()` 优雅关闭 gRPC 与探活 HTTP server（10s 超时），随后调用 `shutdown()` 集合方法按固定顺序释放其余资源：
+
+1. **摘除流量**：从 Consul 注销（`deregister`），让网关停止转发新请求；
+2. **释放连接**：关闭 Redis 连接池（`cache.Close`）→ 关闭数据库连接池（`database.Close`）；
+3. **停热更/指标**：停止配置中心热更监听（`HotConfig.Stop`）→ 取消指标采集 context（`metricsCancel`）；
+4. **停日志**：最后 `log.StopRotation()` flush 并关闭日志文件。
+
+> 所有释放集中在 `shutdown()` 一处便于审计，新增需释放的资源只需在此追加，避免分散 `defer` 导致顺序混乱或重复释放。
+
+### 异常退出兜底（panic / 初始化失败）
+
+除上述正常 `SIGINT/SIGTERM` 路径外，本服务对两类异常退出也做了资源兜底：
+
+- **初始化失败**：`loadConfig` / `initInfra` / `registerToConsul` 等不再直接 `log.Fatalf`（内部 `os.Exit`），而是返回 `error` 由 `run()` 统一处理；`run()` 通过 `defer releaseInfra()` 释放已初始化的全局资源后回到 `main` 上报错误。
+- **运行期 panic**：`main` 顶层 `defer recover` 捕获 panic，`log.Errorf` 打印堆栈后调用 `releaseInfra()` 兜底释放再 `os.Exit(1)`。
+- HTTP/gRPC server 监听失败也不再 `os.Exit`，而是通过 `Server.quitCh` 通知 `Run` 走正常 `shutdown()` 路径。
+
+> `releaseInfra()` 幂等可重复调用，由正常 `shutdown`、panic 兜底、初始化失败 `defer` 三处共用，保证任何退出路径都不会泄漏 Redis/DB 连接、日志句柄或后台指标 goroutine。
