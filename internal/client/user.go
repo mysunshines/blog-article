@@ -36,3 +36,18 @@ func RecordAudit(ctx context.Context, operatorID uint, operator string, action u
 	}
 	return nil
 }
+
+// GetUser 按 userID 拉取用户信息（用于详情聚合回填作者名等）。
+// 失败仅返回 error，调用方决定是否降级（如作者名留空）。
+func GetUser(ctx context.Context, userID uint) (*user.User, error) {
+	var resp user.GetUserResponse
+	if err := grpcclient.SendRequest(ctx, user.UserService_GetUser_FullMethodName, &user.GetUserRequest{
+		UserId: uint32(userID),
+	}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("get user failed: code=%d message=%s", resp.Code, resp.Message)
+	}
+	return resp.User, nil
+}

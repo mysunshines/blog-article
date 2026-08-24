@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mysunshines/blog-article/internal/client"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/errors"
@@ -169,6 +170,14 @@ func (s *articleService) GetArticleForAdmin(ctx context.Context, id uint) (*mode
 	if err != nil {
 		return nil, err
 	}
+
+	// 作者信息聚合：拉取文章作者（独立 gRPC 调用），失败降级（作者名留空），
+	// 不阻断详情返回。GetUser 依赖 article.UserID，必须在 GetByID 之后执行。
+	if u, err := client.GetUser(ctx, article.UserID); err == nil && u != nil {
+		article.AuthorName = u.Username
+		article.User = model.User{ID: uint(u.Id), Username: u.Username, Nickname: u.Nickname, Avatar: u.Avatar}
+	}
+
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
 	article.ContentHTML = util.RenderMarkdown(article.Content)
 	return article, nil

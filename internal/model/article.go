@@ -42,6 +42,9 @@ type Article struct {
 	User     User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Category Category `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 	Tags     []Tag    `gorm:"many2many:article_tags" json:"tags,omitempty"`
+
+	// 作者名（非持久化，由详情接口并行从 user-service 拉取填充）
+	AuthorName string `gorm:"-" json:"author_name,omitempty"`
 }
 
 func (Article) TableName() string {
