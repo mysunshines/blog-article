@@ -25,6 +25,8 @@ type ArticleRepository interface {
 	Search(ctx context.Context, req *model.SearchArticlesRequest) ([]*model.Article, int64, error)
 	GetByUserID(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
+	IncrementViewCountBy(ctx context.Context, id uint, delta int64) error
+	GetViewCount(ctx context.Context, id uint) (int, error)
 	LikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
 	CancelLikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
 	GetLikeStatus(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
@@ -49,26 +51,53 @@ func (r *articleRepository) Create(ctx context.Context, article *model.Article) 
 			return apperrors.ArticleCreateFailed(err)
 		}
 
-		// 处理标签
-		for _, tagName := range extractTagNames(article.Tags) {
-			tag := &model.Tag{}
-			slug := generateSlug(tagName)
-
-			// 查找或创建标签
-			if err := tx.Where("name = ?", tagName).FirstOrCreate(tag, model.Tag{Name: tagName, Slug: slug}).Error; err != nil {
-				continue
+		// 批量处理标签：将逐标签 FirstOrCreate+Create+Update（N×3 次 SQL，N 为标签数）
+		// 压缩为 1 次批量查询 + 1 次批量插入 + 1 次批量关联 + 1 次批量计数。
+		// 保持历史"尽力而为"语义：标签环节失败不阻塞文章创建。
+		tagNames := extractTagNames(article.Tags)
+		if len(tagNames) > 0 {
+			// 1) 一次往返批量查询已存在的标签
+			var existing []*model.Tag
+			queryErr := tx.Where("name IN ?", tagNames).Find(&existing).Error
+			existingByName := make(map[string]*model.Tag, len(existing))
+			for _, t := range existing {
+				existingByName[t.Name] = t
 			}
 
-			// 关联文章和标签
-			articleTag := &model.ArticleTag{
-				ArticleID: article.ID,
-				TagID:     tag.ID,
+			// 2) 去重（同一文章内重复标签只计一次），并区分新增/已存在
+			seen := make(map[string]struct{}, len(tagNames))
+			var newTags []*model.Tag
+			var tagIDs []uint
+			for _, name := range tagNames {
+				if _, dup := seen[name]; dup {
+					continue
+				}
+				seen[name] = struct{}{}
+				if t, ok := existingByName[name]; ok {
+					tagIDs = append(tagIDs, t.ID)
+					continue
+				}
+				newTags = append(newTags, &model.Tag{Name: name, Slug: generateSlug(name)})
 			}
-			tx.Create(articleTag)
 
-			// 更新标签文章数
-			tx.Model(&model.Tag{}).Where("id = ?", tag.ID).
-				Update("article_count", gorm.Expr("article_count + 1"))
+			// 3) 批量插入新标签 + 批量建立关联
+			if queryErr == nil && len(newTags) > 0 {
+				if err := tx.Create(&newTags).Error; err == nil {
+					articleTags := make([]*model.ArticleTag, 0, len(newTags))
+					for _, t := range newTags {
+						tagIDs = append(tagIDs, t.ID)
+						articleTags = append(articleTags, &model.ArticleTag{ArticleID: article.ID, TagID: t.ID})
+					}
+					_ = tx.Create(&articleTags).Error // 尽力而为
+				}
+			}
+
+			// 4) 一次批量更新所有涉及标签的文章计数
+			if len(tagIDs) > 0 {
+				_ = tx.Model(&model.Tag{}).
+					Where("id IN ?", tagIDs).
+					Update("article_count", gorm.Expr("article_count + 1")).Error // 尽力而为
+			}
 		}
 
 		// 更新分类文章数
@@ -359,18 +388,40 @@ func (r *articleRepository) GetByUserID(ctx context.Context, userID uint, page, 
 	return articles, total, nil
 }
 
+// IncrementViewCount 浏览计数降级路径：Redis 不可用时直接更新 DB（保留原行为）。
+// 正常路径由 service 走 Redis INCR + 后台定时批量落库（见 IncrementViewCountBy）。
 func (r *articleRepository) IncrementViewCount(ctx context.Context, id uint) (int, error) {
-	result := r.db.WithContext(ctx).Model(&model.Article{}).
+	if err := r.db.WithContext(ctx).Model(&model.Article{}).
 		Where("id = ?", id).
-		UpdateColumn("view_count", gorm.Expr("view_count + 1"))
-
-	if result.Error != nil {
-		return 0, apperrors.Internal("更新浏览数失败", result.Error)
+		UpdateColumn("view_count", gorm.Expr("view_count + 1")).Error; err != nil {
+		return 0, apperrors.Internal("更新浏览数失败", err)
 	}
+	return r.GetViewCount(ctx, id)
+}
 
-	var article model.Article
-	r.db.WithContext(ctx).First(&article, id)
-	return article.ViewCount, nil
+// IncrementViewCountBy 批量落库浏览增量（后台协程每 30s 调用一次，delta 为
+// 窗口内累计的浏览数，一次 UPDATE 合并 N 次浏览，避免逐次往返）。
+func (r *articleRepository) IncrementViewCountBy(ctx context.Context, id uint, delta int64) error {
+	if delta <= 0 {
+		return nil
+	}
+	if err := r.db.WithContext(ctx).Model(&model.Article{}).
+		Where("id = ?", id).
+		UpdateColumn("view_count", gorm.Expr("view_count + ?", delta)).Error; err != nil {
+		return apperrors.Internal("批量更新浏览数失败", err)
+	}
+	return nil
+}
+
+// GetViewCount 仅读取单列 view_count（浏览计数高频路径使用，避免全行查询）。
+func (r *articleRepository) GetViewCount(ctx context.Context, id uint) (int, error) {
+	var cnt int64
+	if err := r.db.WithContext(ctx).Model(&model.Article{}).
+		Where("id = ?", id).
+		Pluck("view_count", &cnt).Error; err != nil {
+		return 0, apperrors.Internal("读取浏览数失败", err)
+	}
+	return int(cnt), nil
 }
 
 // LikeArticle 点赞：已点赞则幂等返回，未点赞则插入记录并 like_count+1

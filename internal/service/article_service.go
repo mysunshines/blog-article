@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mysunshines/blog-article/internal/model"
@@ -14,6 +16,21 @@ import (
 
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
+)
+
+// 浏览计数异步落库相关常量。
+// 高频浏览路径先 Redis INCR 记录窗口增量（1 次 Redis 写），由后台协程每
+// viewCountFlushInterval 批量写回 MySQL（1 次 UPDATE 合并 N 次浏览），
+// 避免"每次浏览一次 UPDATE + 一次 SELECT"的两趟 DB 往返（历史实现）。
+const (
+	// viewCountIncrKeyFmt Redis 窗口增量 key：自上次落库以来累计的浏览数。
+	viewCountIncrKeyFmt = "article:view:incr:%d"
+	// viewCountBaseKeyFmt DB 基础浏览数的短 TTL 缓存：读取合并时减少对 DB 的访问。
+	viewCountBaseKeyFmt = "article:view:base:%d"
+	// viewCountFlushInterval 浏览增量批量落库周期。
+	viewCountFlushInterval = 30 * time.Second
+	// viewCountBaseTTL 基础浏览数缓存 TTL（落库会同时失效该缓存，TTL 仅兜底）。
+	viewCountBaseTTL = 5 * time.Minute
 )
 
 type ArticleService interface {
@@ -51,13 +68,22 @@ type articleService struct {
 	repo    repository.ArticleRepository
 	db      *gorm.DB
 	sfGroup singleflight.Group // 高并发：请求合并
+
+	// 浏览计数异步落库：viewPending 累计本实例待写回 DB 的浏览增量（权威值），
+	// 由 flushViewCountLoop 每 viewCountFlushInterval 批量落库后清零。
+	viewMu      sync.Mutex
+	viewPending map[uint]int64
 }
 
 func NewArticleService(repo repository.ArticleRepository, db *gorm.DB) ArticleService {
-	return &articleService{
-		repo: repo,
-		db:   db,
+	s := &articleService{
+		repo:        repo,
+		db:          db,
+		viewPending: make(map[uint]int64),
 	}
+	// 启动浏览计数后台批量落库协程
+	go s.flushViewCountLoop()
+	return s
 }
 
 func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArticleRequest) (*model.Article, error) {
@@ -232,8 +258,9 @@ func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.
 		return nil, err
 	}
 
-	// 返回更新后的文章
-	return s.repo.GetByID(ctx, id)
+	// 返回更新后的文章：内存中的 article 已是更新后的最新值（含 preload），
+	// 无需再查一次 DB（历史实现会重复 GetByID，同一请求内两次查询同一数据）
+	return article, nil
 }
 
 func (s *articleService) DeleteArticle(ctx context.Context, id, userID uint) error {
@@ -286,8 +313,81 @@ func (s *articleService) GetUserArticles(ctx context.Context, userID uint, page,
 	return s.repo.GetByUserID(ctx, userID, page, size)
 }
 
+// IncrementViewCount 浏览计数自增。
+// 高频路径：先 Redis INCR 记录窗口增量（1 次 Redis 写，fail-fast），本地同时累计
+// 待落库增量，由后台协程每 viewCountFlushInterval 批量写回 MySQL；
+// 返回值 = DB 基础浏览数 + 窗口增量（近似实时）。Redis 不可用时降级为 DB 直更。
 func (s *articleService) IncrementViewCount(ctx context.Context, id uint) (int, error) {
-	return s.repo.IncrementViewCount(ctx, id)
+	delta, err := cache.Incr(ctx, fmt.Sprintf(viewCountIncrKeyFmt, id))
+	if err != nil {
+		// 降级：Redis 不可用（fail-fast 1s 内返回），直接更新 DB，保留原行为
+		return s.repo.IncrementViewCount(ctx, id)
+	}
+
+	s.viewMu.Lock()
+	s.viewPending[id]++
+	s.viewMu.Unlock()
+
+	base, err := s.viewBase(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	return base + int(delta), nil
+}
+
+// viewBase 读取 DB 基础浏览数，带短 TTL Redis 缓存；缓存 miss 或读取失败时查库一次并回填。
+func (s *articleService) viewBase(ctx context.Context, id uint) (int, error) {
+	key := fmt.Sprintf(viewCountBaseKeyFmt, id)
+	if v, err := cache.Get(ctx, key); err == nil {
+		if n, convErr := strconv.Atoi(v); convErr == nil {
+			return n, nil
+		}
+	}
+	// miss 或读取失败：查库回填（回填失败仅影响实时性，不影响返回值）
+	base, err := s.repo.GetViewCount(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	_ = cache.Set(ctx, key, base, viewCountBaseTTL)
+	return base, nil
+}
+
+// flushViewCountLoop 后台定时批量落库浏览增量。
+func (s *articleService) flushViewCountLoop() {
+	ticker := time.NewTicker(viewCountFlushInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.flushViewCounts()
+	}
+}
+
+// flushViewCounts 把本地累计的待落库增量批量写回 MySQL（1 次 UPDATE 合并 N 次浏览），
+// 成功后清理 Redis 窗口增量与基础值缓存，使读取重新以 DB 为基准。
+// 落库失败则回填待处理集合，下个周期重试；Redis 清理失败仅影响读取合并实时性，DB 已正确。
+func (s *articleService) flushViewCounts() {
+	s.viewMu.Lock()
+	if len(s.viewPending) == 0 {
+		s.viewMu.Unlock()
+		return
+	}
+	pending := s.viewPending
+	s.viewPending = make(map[uint]int64, len(pending))
+	s.viewMu.Unlock()
+
+	for id, delta := range pending {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err := s.repo.IncrementViewCountBy(flushCtx, id, delta)
+		cancel()
+		if err != nil {
+			// 落库失败：回填待处理集合，下个周期重试
+			s.viewMu.Lock()
+			s.viewPending[id] += delta
+			s.viewMu.Unlock()
+			continue
+		}
+		// 清理 Redis 窗口增量与基础值缓存：读取将重新以 DB 值为基准
+		_ = cache.Delete(flushCtx, fmt.Sprintf(viewCountIncrKeyFmt, id), fmt.Sprintf(viewCountBaseKeyFmt, id))
+	}
 }
 
 func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
@@ -436,6 +536,37 @@ func (s *articleService) AdminListArticles(ctx context.Context, req *model.Admin
 	return s.repo.AdminList(ctx, req)
 }
 
+// applyStatusAndReturn 执行状态更新 + 失效缓存，并把写入 DB 的状态机列同步回内存中的
+// article，直接返回该对象，避免状态机方法"更新后再 GetByID 一次"的重复 DB 往返。
+// cols 的 key 需与 model.Article 字段名一致（如 "status"/"published_at"）。
+func (s *articleService) applyStatusAndReturn(ctx context.Context, id uint, article *model.Article, cols map[string]interface{}) (*model.Article, error) {
+	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
+		return nil, err
+	}
+	s.invalidateArticleCache(id, article.Slug)
+	if v, ok := cols["status"]; ok {
+		if st, ok := v.(string); ok {
+			article.Status = st
+		}
+	}
+	if v, ok := cols["published_at"]; ok {
+		if pt, ok := v.(*time.Time); ok {
+			article.PublishedAt = pt
+		}
+	}
+	if v, ok := cols["reject_reason"]; ok {
+		if rr, ok := v.(string); ok {
+			article.RejectReason = rr
+		}
+	}
+	if v, ok := cols["offline_reason"]; ok {
+		if or, ok := v.(string); ok {
+			article.OfflineReason = or
+		}
+	}
+	return article, nil
+}
+
 func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Article, error) {
 	article, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -446,16 +577,11 @@ func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Ar
 	}
 
 	now := time.Now()
-	cols := map[string]interface{}{
+	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":        model.ArticleStatusPublished,
 		"published_at":  &now,
 		"reject_reason": "",
-	}
-	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
-		return nil, err
-	}
-	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	})
 }
 
 func (s *articleService) RejectArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
@@ -467,15 +593,10 @@ func (s *articleService) RejectArticle(ctx context.Context, id uint, reason stri
 		return nil, errors.BadRequest("仅待审核文章可以拒绝")
 	}
 
-	cols := map[string]interface{}{
+	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":        model.ArticleStatusRejected,
 		"reject_reason": reason,
-	}
-	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
-		return nil, err
-	}
-	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	})
 }
 
 func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
@@ -487,15 +608,10 @@ func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason str
 		return nil, errors.BadRequest("仅已发布文章可以下线")
 	}
 
-	cols := map[string]interface{}{
+	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":         model.ArticleStatusOffline,
 		"offline_reason": reason,
-	}
-	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
-		return nil, err
-	}
-	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	})
 }
 
 func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Article, error) {
@@ -514,11 +630,7 @@ func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Ar
 		now := time.Now()
 		cols["published_at"] = &now
 	}
-	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
-		return nil, err
-	}
-	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	return s.applyStatusAndReturn(ctx, id, article, cols)
 }
 
 // SubmitArticle 提交审核（draft/offline/rejected -> pending）
@@ -534,16 +646,11 @@ func (s *articleService) SubmitArticle(ctx context.Context, id uint) (*model.Art
 		return nil, errors.BadRequest("仅草稿、已下线或已拒绝文章可以提交审核")
 	}
 
-	cols := map[string]interface{}{
+	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":         model.ArticleStatusPending,
 		"reject_reason":  "",
 		"offline_reason": "",
-	}
-	if err := s.repo.UpdateStatus(ctx, id, cols); err != nil {
-		return nil, err
-	}
-	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	})
 }
 
 func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error) {
@@ -576,7 +683,8 @@ func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *m
 		return nil, err
 	}
 	s.invalidateArticleCache(id, article.Slug)
-	return s.repo.GetByID(ctx, id)
+	// 内存对象已是最新值（含 preload），无需再查一次 DB
+	return article, nil
 }
 
 func (s *articleService) AdminDeleteArticle(ctx context.Context, id uint) error {
