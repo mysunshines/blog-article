@@ -16,26 +16,26 @@ const (
 )
 
 type Article struct {
-	ID            uint       `gorm:"primaryKey" json:"id"`
-	UserID        uint       `gorm:"index" json:"user_id"`
-	Title         string     `gorm:"size:256" json:"title"`
-	Slug          string     `gorm:"uniqueIndex;size:256" json:"slug"`
-	Summary       string     `gorm:"size:512" json:"summary"`
-	Content       string     `gorm:"type:text" json:"content"`
-	ContentHTML   string     `gorm:"-" json:"content_html"` // 由后端渲染并净化的安全 HTML，不入库
-	CoverImage    string     `gorm:"size:256" json:"cover_image"`
-	CategoryID    uint       `gorm:"index" json:"category_id"`
-	ViewCount     int        `gorm:"default:0" json:"view_count"`
-	CommentCount  int        `gorm:"default:0" json:"comment_count"`
-	LikeCount     int        `gorm:"default:0" json:"like_count"`
-	Status        string     `gorm:"size:16;default:'draft'" json:"status"`
-	RejectReason  string     `gorm:"size:256" json:"reject_reason"`
-	OfflineReason string     `gorm:"size:256" json:"offline_reason"`
-	IsFeatured    bool       `gorm:"default:false" json:"is_featured"`
-	AllowComment  bool       `gorm:"default:true" json:"allow_comment"`
-	PublishedAt   *time.Time  `json:"published_at"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	UserID        uint           `gorm:"index" json:"user_id"`
+	Title         string         `gorm:"size:256" json:"title"`
+	Slug          string         `gorm:"uniqueIndex;size:256" json:"slug"`
+	Summary       string         `gorm:"size:512" json:"summary"`
+	Content       string         `gorm:"type:text" json:"content"`
+	ContentHTML   string         `gorm:"-" json:"content_html"` // 由后端渲染并净化的安全 HTML，不入库
+	CoverImage    string         `gorm:"size:256" json:"cover_image"`
+	CategoryID    uint           `gorm:"index" json:"category_id"`
+	ViewCount     int            `gorm:"default:0" json:"view_count"`
+	CommentCount  int            `gorm:"default:0" json:"comment_count"`
+	LikeCount     int            `gorm:"default:0" json:"like_count"`
+	Status        string         `gorm:"size:16;default:'draft'" json:"status"`
+	RejectReason  string         `gorm:"size:256" json:"reject_reason"`
+	OfflineReason string         `gorm:"size:256" json:"offline_reason"`
+	IsFeatured    bool           `gorm:"default:false" json:"is_featured"`
+	AllowComment  bool           `gorm:"default:true" json:"allow_comment"`
+	PublishedAt   *time.Time     `json:"published_at"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// 关联

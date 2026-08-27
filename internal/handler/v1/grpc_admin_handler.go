@@ -56,9 +56,9 @@ func (h *GrpcArticleHandler) ListArticlesForAdmin(ctx context.Context, req *arti
 		return nil, err
 	}
 	articles, total, err := h.Svc.AdminListArticles(ctx, &model.AdminListArticlesRequest{
-		Status:   req.GetStatus(),
-		Page:     uint(req.GetPage()),
-		Size:     uint(req.GetPageSize()),
+		Status: req.GetStatus(),
+		Page:   uint(req.GetPage()),
+		Size:   uint(req.GetPageSize()),
 	})
 	if err != nil {
 		return nil, err

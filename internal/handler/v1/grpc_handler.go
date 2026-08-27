@@ -83,11 +83,11 @@ func (h *GrpcArticleHandler) GetArticle(ctx context.Context, req *article.GetArt
 
 func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.ListArticlesRequest) (*article.ListArticlesResponse, error) {
 	result, total, err := h.Svc.ListArticles(ctx, &model.ListArticlesRequest{
-		Page:        uint(req.Page),
-		Size:        uint(req.PageSize),
-		CategoryID:  uint(req.CategoryId),
-		Tag:         req.Tag,
-		OrderBy:     req.OrderBy,
+		Page:       uint(req.Page),
+		Size:       uint(req.PageSize),
+		CategoryID: uint(req.CategoryId),
+		Tag:        req.Tag,
+		OrderBy:    req.OrderBy,
 	})
 
 	if err != nil {
