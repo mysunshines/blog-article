@@ -5,8 +5,9 @@ go 1.25.0
 exclude google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 
 require (
+	github.com/mysunshines/blog-notification v1.0.0
 	github.com/mysunshines/blog-user v1.2.6
-	github.com/mysunshines/gocommon v1.5.6
+	github.com/mysunshines/gocommon v1.6.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
 	golang.org/x/sync v0.22.0

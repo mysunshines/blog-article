@@ -3,15 +3,17 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mysunshines/blog-article/internal/client"
+	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
-	"github.com/mysunshines/blog-article/internal/errors"
+	notification "github.com/mysunshines/blog-notification/proto/pb"
 	"github.com/mysunshines/gocommon/cache"
 	"github.com/mysunshines/gocommon/util"
 
@@ -400,7 +402,25 @@ func (s *articleService) flushViewCounts() {
 }
 
 func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
-	return s.repo.LikeArticle(ctx, articleID, userID)
+	// 点赞前取文章（作者、标题）用于首次点赞时通知作者；顺带判断是否已点赞，
+	// 避免幂等重复点赞反复触发通知（点赞是低频写操作，多一次读可接受）。
+	article, err := s.repo.GetByID(ctx, articleID)
+	if err != nil {
+		return 0, false, err
+	}
+	_, alreadyLiked, err := s.repo.GetLikeStatus(ctx, articleID, userID)
+	if err != nil {
+		return 0, false, err
+	}
+	count, liked, err := s.repo.LikeArticle(ctx, articleID, userID)
+	if err != nil {
+		return 0, false, err
+	}
+	// 首次点赞且非作者本人 → 通知作者（best-effort，失败不影响主流程）
+	if !alreadyLiked && article.UserID != userID {
+		s.notifyArticleAuthor(ctx, article, notification.NotificationType_ARTICLE_LIKED, "", userID)
+	}
+	return count, liked, nil
 }
 
 func (s *articleService) CancelLikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
@@ -586,11 +606,17 @@ func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Ar
 	}
 
 	now := time.Now()
-	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
+	art, err := s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":        model.ArticleStatusPublished,
 		"published_at":  &now,
 		"reject_reason": "",
 	})
+	if err != nil {
+		return nil, err
+	}
+	// 通知作者文章审核通过（best-effort）
+	s.notifyArticleAuthor(ctx, art, notification.NotificationType_ARTICLE_APPROVED, "", 0)
+	return art, nil
 }
 
 func (s *articleService) RejectArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
@@ -602,10 +628,16 @@ func (s *articleService) RejectArticle(ctx context.Context, id uint, reason stri
 		return nil, errors.BadRequest("仅待审核文章可以拒绝")
 	}
 
-	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
+	art, err := s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":        model.ArticleStatusRejected,
 		"reject_reason": reason,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// 通知作者文章审核被驳回（best-effort），content 携带驳回原因
+	s.notifyArticleAuthor(ctx, art, notification.NotificationType_ARTICLE_REJECTED, reason, 0)
+	return art, nil
 }
 
 func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason string) (*model.Article, error) {
@@ -617,10 +649,16 @@ func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason str
 		return nil, errors.BadRequest("仅已发布文章可以下线")
 	}
 
-	return s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
+	art, err := s.applyStatusAndReturn(ctx, id, article, map[string]interface{}{
 		"status":         model.ArticleStatusOffline,
 		"offline_reason": reason,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// 通知作者文章已被下线（best-effort），content 携带下线原因
+	s.notifyArticleAuthor(ctx, art, notification.NotificationType_ARTICLE_OFFLINED, reason, 0)
+	return art, nil
 }
 
 func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Article, error) {
@@ -735,6 +773,53 @@ func (s *articleService) invalidateArticleCache(id uint, slug string) {
 	cache.LocalCacheDelete(fmt.Sprintf("article:%d", id))
 	if slug != "" {
 		cache.LocalCacheDelete(fmt.Sprintf("article:slug:%s", slug))
+	}
+}
+
+// notifyArticleAuthor 向文章作者发送站内消息（best-effort，失败仅告警不影响主流程）。
+// typ 决定消息标题模板；content 携带附加正文（如驳回/下线原因、评论内容）；
+// actorID > 0 时尝试拉取触发者昵称用于展示，actorID = 0 表示系统操作（审核/下线）。
+func (s *articleService) notifyArticleAuthor(ctx context.Context, article *model.Article,
+	typ notification.NotificationType, content string, actorID uint) {
+	if article == nil || article.UserID == 0 {
+		return
+	}
+
+	// 根据消息类型生成标题
+	var title string
+	switch typ {
+	case notification.NotificationType_ARTICLE_APPROVED:
+		title = fmt.Sprintf("你的文章《%s》已通过审核", article.Title)
+	case notification.NotificationType_ARTICLE_REJECTED:
+		title = fmt.Sprintf("你的文章《%s》审核未通过", article.Title)
+	case notification.NotificationType_ARTICLE_OFFLINED:
+		title = fmt.Sprintf("你的文章《%s》已被下线", article.Title)
+	case notification.NotificationType_ARTICLE_LIKED:
+		title = fmt.Sprintf("你的文章《%s》收到了点赞", article.Title)
+	default:
+		return
+	}
+
+	// 构建文章跳转链接（前端路由：slug 优先，无 slug 则用 id）
+	link := fmt.Sprintf("/article.html?slug=%s", article.Slug)
+	if article.Slug == "" {
+		link = fmt.Sprintf("/article.html?id=%d", article.ID)
+	}
+
+	// 拉取触发者昵称（best-effort，失败时 actorName 留空）
+	actorName := "系统"
+	if actorID > 0 {
+		if u, err := client.GetUser(ctx, actorID); err == nil && u != nil {
+			if u.Nickname != "" {
+				actorName = u.Nickname
+			} else {
+				actorName = u.Username
+			}
+		}
+	}
+
+	if err := client.CreateNotification(ctx, article.UserID, typ, title, content, link, actorID, actorName); err != nil {
+		log.Printf("[notification][warn] notify article author failed: %v", err)
 	}
 }
 
