@@ -13,7 +13,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
-	notification "github.com/mysunshines/blog-notification/proto/pb"
+	notification "github.com/mysunshines/blog-notification/proto/pb/v1"
 	"github.com/mysunshines/gocommon/cache"
 	"github.com/mysunshines/gocommon/util"
 
@@ -65,6 +65,9 @@ type ArticleService interface {
 	SubmitArticle(ctx context.Context, id uint) (*model.Article, error)
 	AdminUpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error)
 	AdminDeleteArticle(ctx context.Context, id uint) error
+
+	// BackfillRanking 历史回填四个榜单（浏览/点赞/评论/作者），best-effort。
+	BackfillRanking(ctx context.Context) error
 }
 
 type articleService struct {
@@ -286,6 +289,13 @@ func (s *articleService) DeleteArticle(ctx context.Context, id, userID uint) err
 		return errors.PermissionDenied()
 	}
 
+	// 软删除已发布文章 → 作者发文榜 -1（best-effort）
+	if article.Status == model.ArticleStatusPublished {
+		if perr := client.IncrScore(ctx, client.BoardAuthorArticles,
+			strconv.FormatUint(uint64(article.UserID), 10), -1); perr != nil {
+			log.Printf("[ranking] push author score failed user=%d: %v", article.UserID, perr)
+		}
+	}
 	return s.repo.Delete(ctx, id)
 }
 
@@ -398,7 +408,70 @@ func (s *articleService) flushViewCounts() {
 		}
 		// 清理 Redis 窗口增量与基础值缓存：读取将重新以 DB 值为基准
 		_ = cache.Delete(flushCtx, fmt.Sprintf(viewCountIncrKeyFmt, id), fmt.Sprintf(viewCountBaseKeyFmt, id))
+
+		// 推送浏览榜（best-effort，独立超时，不影响落库主流程）
+		pushCtx, pushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if perr := client.IncrScore(pushCtx, client.BoardArticleViews,
+			strconv.FormatUint(uint64(id), 10), float64(delta)); perr != nil {
+			log.Printf("[ranking] push view score failed article=%d: %v", id, perr)
+		}
+		pushCancel()
 	}
+}
+
+// BackfillRanking 历史回填四个榜单（浏览/点赞/评论/作者），以 DB 当前值为权威快照，
+// 批量覆盖 ZSET 并移除已消失成员（prune_others）。best-effort：单榜失败仅记录日志。
+func (s *articleService) BackfillRanking(ctx context.Context) error {
+	const batchSize = 500
+	views := make(map[string]float64)
+	likes := make(map[string]float64)
+	comments := make(map[string]float64)
+	lastID := uint(0)
+	for {
+		articles, err := s.repo.ListArticlesForRanking(ctx, lastID, batchSize)
+		if err != nil {
+			return err
+		}
+		for _, a := range articles {
+			lastID = a.ID
+			// 仅已发布且未软删的文章参与文章维度榜单
+			if a.Status != model.ArticleStatusPublished || a.DeletedAt.Valid {
+				continue
+			}
+			idStr := strconv.FormatUint(uint64(a.ID), 10)
+			views[idStr] = float64(a.ViewCount)
+			likes[idStr] = float64(a.LikeCount)
+			comments[idStr] = float64(a.CommentCount)
+		}
+		if len(articles) < batchSize {
+			break
+		}
+	}
+
+	authors, err := s.repo.CountPublishedArticlesByAuthor(ctx)
+	if err != nil {
+		return err
+	}
+	authorItems := make(map[string]float64, len(authors))
+	for uid, cnt := range authors {
+		authorItems[strconv.FormatUint(uint64(uid), 10)] = float64(cnt)
+	}
+
+	boards := []struct {
+		board string
+		items map[string]float64
+	}{
+		{client.BoardArticleViews, views},
+		{client.BoardArticleLikes, likes},
+		{client.BoardArticleComments, comments},
+		{client.BoardAuthorArticles, authorItems},
+	}
+	for _, b := range boards {
+		if err := client.BatchSetScore(ctx, b.board, b.items, true); err != nil {
+			log.Printf("[ranking] backfill board %s failed: %v", b.board, err)
+		}
+	}
+	return nil
 }
 
 func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
@@ -420,11 +493,27 @@ func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint
 	if !alreadyLiked && article.UserID != userID {
 		s.notifyArticleAuthor(ctx, article, notification.NotificationType_ARTICLE_LIKED, "", userID)
 	}
+	// 新点赞 → 推送点赞榜 +1（best-effort，失败不影响主流程）
+	if !alreadyLiked {
+		if perr := client.IncrScore(ctx, client.BoardArticleLikes,
+			strconv.FormatUint(uint64(articleID), 10), 1); perr != nil {
+			log.Printf("[ranking] push like score failed article=%d: %v", articleID, perr)
+		}
+	}
 	return count, liked, nil
 }
 
 func (s *articleService) CancelLikeArticle(ctx context.Context, articleID, userID uint) (int, bool, error) {
-	return s.repo.CancelLikeArticle(ctx, articleID, userID)
+	// 取消前判断是否已点赞（用于榜单 -1，best-effort）
+	_, wasLiked, _ := s.repo.GetLikeStatus(ctx, articleID, userID)
+	count, liked, err := s.repo.CancelLikeArticle(ctx, articleID, userID)
+	if err == nil && wasLiked {
+		if perr := client.IncrScore(ctx, client.BoardArticleLikes,
+			strconv.FormatUint(uint64(articleID), 10), -1); perr != nil {
+			log.Printf("[ranking] push unlike score failed article=%d: %v", articleID, perr)
+		}
+	}
+	return count, liked, err
 }
 
 func (s *articleService) GetLikeStatus(ctx context.Context, articleID, userID uint) (int, bool, error) {
@@ -616,6 +705,11 @@ func (s *articleService) ApproveArticle(ctx context.Context, id uint) (*model.Ar
 	}
 	// 通知作者文章审核通过（best-effort）
 	s.notifyArticleAuthor(ctx, art, notification.NotificationType_ARTICLE_APPROVED, "", 0)
+	// 文章进入「已发布」→ 作者发文榜 +1（best-effort）
+	if perr := client.IncrScore(ctx, client.BoardAuthorArticles,
+		strconv.FormatUint(uint64(art.UserID), 10), 1); perr != nil {
+		log.Printf("[ranking] push author score failed user=%d: %v", art.UserID, perr)
+	}
 	return art, nil
 }
 
@@ -658,6 +752,11 @@ func (s *articleService) OfflineArticle(ctx context.Context, id uint, reason str
 	}
 	// 通知作者文章已被下线（best-effort），content 携带下线原因
 	s.notifyArticleAuthor(ctx, art, notification.NotificationType_ARTICLE_OFFLINED, reason, 0)
+	// 文章「已发布」→「已下线」→ 作者发文榜 -1（best-effort）
+	if perr := client.IncrScore(ctx, client.BoardAuthorArticles,
+		strconv.FormatUint(uint64(art.UserID), 10), -1); perr != nil {
+		log.Printf("[ranking] push author score failed user=%d: %v", art.UserID, perr)
+	}
 	return art, nil
 }
 
@@ -677,7 +776,16 @@ func (s *articleService) PublishArticle(ctx context.Context, id uint) (*model.Ar
 		now := time.Now()
 		cols["published_at"] = &now
 	}
-	return s.applyStatusAndReturn(ctx, id, article, cols)
+	art, err := s.applyStatusAndReturn(ctx, id, article, cols)
+	if err != nil {
+		return nil, err
+	}
+	// 文章从「已下线」恢复发布 → 作者发文榜 +1（best-effort）
+	if perr := client.IncrScore(ctx, client.BoardAuthorArticles,
+		strconv.FormatUint(uint64(art.UserID), 10), 1); perr != nil {
+		log.Printf("[ranking] push author score failed user=%d: %v", art.UserID, perr)
+	}
+	return art, nil
 }
 
 // SubmitArticle 提交审核（draft/offline/rejected -> pending）
@@ -740,6 +848,13 @@ func (s *articleService) AdminDeleteArticle(ctx context.Context, id uint) error 
 		return err
 	}
 	s.invalidateArticleCache(id, article.Slug)
+	// 软删除已发布文章 → 作者发文榜 -1（best-effort）
+	if article.Status == model.ArticleStatusPublished {
+		if perr := client.IncrScore(ctx, client.BoardAuthorArticles,
+			strconv.FormatUint(uint64(article.UserID), 10), -1); perr != nil {
+			log.Printf("[ranking] push author score failed user=%d: %v", article.UserID, perr)
+		}
+	}
 	return s.repo.Delete(ctx, id)
 }
 

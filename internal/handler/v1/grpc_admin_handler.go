@@ -9,11 +9,11 @@ import (
 
 	"github.com/mysunshines/blog-article/internal/client"
 	"github.com/mysunshines/blog-article/internal/model"
-	article "github.com/mysunshines/blog-article/proto/pb"
+	article "github.com/mysunshines/blog-article/proto/pb/v1"
 	"github.com/mysunshines/gocommon/constants"
 	commonmiddleware "github.com/mysunshines/gocommon/middleware"
 
-	user "github.com/mysunshines/blog-user/proto/pb"
+	user "github.com/mysunshines/blog-user/proto/pb/v1"
 )
 
 // 以下方法为后台管理 / 分类管理接口（管理员操作）。

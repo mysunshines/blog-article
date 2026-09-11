@@ -102,6 +102,21 @@ func (User) TableName() string {
 	return "users"
 }
 
+// ArticleEnrich 仅供 decorator.v0.Decorator 批量回填文章展示字段（标题/封面/作者名）。
+// 与 Article 主表结构解耦，避免 ranking-service 透传路径引入无关字段。
+type ArticleEnrich struct {
+	ID         uint   `gorm:"column:id" json:"id"`
+	Title      string `gorm:"column:title" json:"title"`
+	Slug       string `gorm:"column:slug" json:"slug"`
+	CoverImage string `gorm:"column:cover_image" json:"cover_image"`
+	UserID     uint   `gorm:"column:user_id" json:"user_id"`
+	AuthorName string `gorm:"column:author_name" json:"author_name"`
+}
+
+func (ArticleEnrich) TableName() string {
+	return "articles"
+}
+
 // DTO 请求结构
 type CreateArticleRequest struct {
 	UserID       uint     `json:"user_id"`

@@ -17,6 +17,7 @@ import (
 type ArticleRepository interface {
 	Create(ctx context.Context, article *model.Article) error
 	GetByID(ctx context.Context, id uint) (*model.Article, error)
+	GetArticlesByIDs(ctx context.Context, ids []uint) ([]*model.ArticleEnrich, error)
 	GetBySlug(ctx context.Context, slug string) (*model.Article, error)
 	Update(ctx context.Context, article *model.Article) error
 	UpdateStatus(ctx context.Context, id uint, cols map[string]interface{}) error
@@ -34,6 +35,10 @@ type ArticleRepository interface {
 	GetCategory(ctx context.Context, id uint) (*model.Category, error)
 	CountArticlesByCategory(ctx context.Context, categoryID uint, status string) (int64, error)
 	DeleteCategory(ctx context.Context, id uint) error
+
+	// 排行榜历史回填
+	ListArticlesForRanking(ctx context.Context, lastID, limit uint) ([]model.Article, error)
+	CountPublishedArticlesByAuthor(ctx context.Context) (map[uint]int64, error)
 }
 
 type articleRepository struct {
@@ -150,6 +155,24 @@ func (r *articleRepository) fillAuthors(articles []*model.Article) {
 	for _, a := range articles {
 		r.fillAuthor(a)
 	}
+}
+
+// GetArticlesByIDs 按文章 ID 批量回填展示字段（标题/封面/作者名），供 decorator 使用。
+// 仅取 article-service 拥有的字段，不感知 ranking 展示语义；LEFT JOIN users 取作者名。
+func (r *articleRepository) GetArticlesByIDs(ctx context.Context, ids []uint) ([]*model.ArticleEnrich, error) {
+	if len(ids) == 0 {
+		return []*model.ArticleEnrich{}, nil
+	}
+	var list []*model.ArticleEnrich
+	if err := r.db.WithContext(ctx).
+		Table("articles a").
+		Select("a.id, a.title, a.slug, a.cover_image, a.user_id, u.username as author_name").
+		Joins("LEFT JOIN users u ON u.id = a.user_id").
+		Where("a.id IN ? AND a.deleted_at IS NULL", ids).
+		Find(&list).Error; err != nil {
+		return nil, apperrors.Internal("批量获取文章展示信息失败", err)
+	}
+	return list, nil
 }
 
 func (r *articleRepository) GetBySlug(ctx context.Context, slug string) (*model.Article, error) {
@@ -596,4 +619,41 @@ func generateSlug(title string) string {
 	}
 
 	return fmt.Sprintf("%s-%d", slug, time.Now().Unix())
+}
+
+// ListArticlesForRanking 游标分页拉取文章聚合字段（id/user_id/三计数/status/软删标记），
+// 用于排行榜历史回填，避免一次性加载整表到内存。
+func (r *articleRepository) ListArticlesForRanking(ctx context.Context, lastID, limit uint) ([]model.Article, error) {
+	var articles []model.Article
+	if err := r.db.WithContext(ctx).
+		Select("id, user_id, view_count, like_count, comment_count, status, deleted_at").
+		Where("id > ?", lastID).
+		Order("id ASC").
+		Limit(int(limit)).
+		Find(&articles).Error; err != nil {
+		return nil, err
+	}
+	return articles, nil
+}
+
+// CountPublishedArticlesByAuthor 统计每个作者的「已发布且未删除」文章数（作者榜权威值）。
+func (r *articleRepository) CountPublishedArticlesByAuthor(ctx context.Context) (map[uint]int64, error) {
+	type authorCount struct {
+		UserID uint
+		Cnt    int64
+	}
+	var rows []authorCount
+	if err := r.db.WithContext(ctx).
+		Model(&model.Article{}).
+		Select("user_id, COUNT(*) as cnt").
+		Where("status = ? AND deleted_at IS NULL", model.ArticleStatusPublished).
+		Group("user_id").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	m := make(map[uint]int64, len(rows))
+	for _, row := range rows {
+		m[row.UserID] = row.Cnt
+	}
+	return m, nil
 }

@@ -1,4 +1,4 @@
-.PHONY: all build run test clean deps update proto docker docker-run lint fmt help
+.PHONY: all build run test clean deps update proto docker docker-run lint fmt help api
 
 # 服务名称（各服务按需修改）
 SERVICE_SHORT_NAME=article
@@ -9,9 +9,10 @@ BINARY_NAME=$(SERVICE_NAME)
 SRC_DIR=cmd/server
 # 构建输出目录
 BIN_DIR=bin
-# 容器端口映射（docker-run 使用，按服务实际情况修改）
-# 8082 仅探活 HTTP（/health /ready /version），9002 为唯一 gRPC 业务入口
-PORTS=8082:8082 9002:9002
+# 容器端口映射（docker-run 使用）。
+# 与 docker-compose.yml 的宿主机映射保持一致：HTTP 8082（探活 / 直连调试）+ gRPC 9102（业务入口）。
+# Metrics 9092 不对外映射，由 Prometheus 在 shared-infra 网络内直接抓取。
+PORTS=8082:8082 9102:9102
 
 # 版本号：优先取 git describe，失败回退 dev
 GIT_VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -46,10 +47,20 @@ update:
 proto:
 	@if [ -d $(PROTO_DIR) ]; then \
 		mkdir -p $(PROTO_OUT) && \
-		protoc -I $(PROTO_DIR) $(PROTOC_OPTS) $(PROTO_DIR)/$(SERVICE_SHORT_NAME).proto; \
+		protoc -I $(PROTO_DIR) $(PROTOC_OPTS) $(PROTO_DIR)/$(SERVICE_SHORT_NAME).proto && \
+		protoc -I $(PROTO_DIR) $(PROTOC_OPTS) $(PROTO_DIR)/decorator/v0/decorator.proto; \
 	else \
 		echo "==> No proto directory"; \
 	fi
+
+# 生成对外 API 文档（来源：proto，网关按 /api/v1/<svc>/<snake_method> 反射代理）
+# 生成文件：服务根目录 api.md（含 url / method / headers / request / response / curl 示例）
+# Go 版生成器（Python 版 gen_api_doc.py 保留作为备选）
+API_GEN_DIR := $(dir $(lastword $(MAKEFILE_LIST)))/../infra/scripts/gen_api_doc
+API_GEN := $(API_GEN_DIR)/genapidoc
+api:
+	@cd "$(API_GEN_DIR)" && go build -o genapidoc .
+	@"$(API_GEN)" --proto $(PROTO_DIR)/$(SERVICE_SHORT_NAME).proto --out api.md
 
 # 代码检查
 lint:

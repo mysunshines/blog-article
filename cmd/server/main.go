@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mysunshines/blog-article/internal/client"
 	v1 "github.com/mysunshines/blog-article/internal/handler/v1"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/service"
-	article "github.com/mysunshines/blog-article/proto/pb"
+	decoratorv0pb "github.com/mysunshines/blog-article/proto/decorator/v0/pb"
+	article "github.com/mysunshines/blog-article/proto/pb/v1"
 	"github.com/mysunshines/gocommon/cache"
 	goconfig "github.com/mysunshines/gocommon/config"
 	"github.com/mysunshines/gocommon/configcenter"
@@ -42,6 +44,9 @@ var (
 	metricsCancel context.CancelFunc
 	hotCfg        *configcenter.ServiceConfig
 	deregister    func() error
+	// serviceName 当前服务名（取自配置 cfg.App.Name），供 main 顶层 defer 与 run 内共用，
+	// 避免硬编码 gocommon 的 constants.ServiceNameXxx。
+	serviceName string
 )
 
 type Server struct {
@@ -88,7 +93,7 @@ func NewServer(cfg *goconfig.Config, db *gorm.DB) *Server {
 
 	// 初始化熔断器
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        constants.ServiceNameArticle,
+		Name:        serviceName,
 		MaxRequests: constants.DefaultCBMaxRequests,
 		Interval:    constants.DefaultCBInterval * time.Second,
 		Timeout:     constants.DefaultCBTimeout * time.Second,
@@ -229,11 +234,11 @@ func (s *Server) runGRPCServer() {
 		grpc.MaxConcurrentStreams(g.MaxConcurrentStreams),
 		// 拦截器链：Panic 恢复（最外层，含指标 panic_counter_total）→ 超时+熔断 → 鉴权 → 指标 → 日志
 		grpc.ChainUnaryInterceptor(
-			middleware.GRPCRecoveryInterceptor(constants.ServiceNameArticle),
-			middleware.GRPCTimeoutInterceptor(constants.ServiceNameArticle),
+			middleware.GRPCRecoveryInterceptor(serviceName),
+			middleware.GRPCTimeoutInterceptor(serviceName),
 			middleware.GRPCCircuitBreakerInterceptor(s.cb),
 			middleware.GRPCAuthInterceptor(),
-			middleware.GRPCMetricsInterceptor(constants.ServiceNameArticle),
+			middleware.GRPCMetricsInterceptor(serviceName),
 			middleware.GRPCLoggingInterceptor(),
 		),
 	}
@@ -249,6 +254,9 @@ func (s *Server) runGRPCServer() {
 		Svc: s.articleSvc,
 		Cb:  s.cb,
 	})
+	// 注册 decorator.v0.Decorator：供 ranking-service 回调装饰文章榜成员（标题/作者名），
+	// 使「文章榜」等以文章为成员的榜单无需 ranking-service 感知业务字段。
+	decoratorv0pb.RegisterDecoratorServer(s.grpcServer, &v1.DecoratorHandler{Repo: s.articleRepo})
 	reflection.Register(s.grpcServer)
 
 	log.Infof("gRPC server starting on %s", goconfig.Get().GRPC.Addr())
@@ -279,7 +287,7 @@ func main() {
 			runErr = fmt.Errorf("panic: %v", r)
 		}
 		if runErr != nil {
-			log.Errorf("%s exited: %v", constants.ServiceNameArticle, runErr)
+			log.Errorf("%s exited: %v", serviceName, runErr)
 		}
 		releaseInfra()
 		if runErr != nil {
@@ -298,22 +306,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	serviceName = cfg.App.Name
 
 	// ② 初始化日志
-	log.Init(cfg.App.LogDir, cfg.App.LogLevel, constants.ServiceNameArticle)
+	log.Init(cfg.App.LogDir, cfg.App.LogLevel, serviceName)
 
 	// ②.1 启用 Loki 集中日志（想法 3 · 方案 A）；未配置时降级为仅本地日志。
-	log.EnableLokiFromConfig(cfg.Loki, constants.ServiceNameArticle)
+	log.EnableLokiFromConfig(cfg.Loki, serviceName)
 	// ②.2 启用 OpenTelemetry 链路追踪（想法 3 · 方案 B）；未配置时降级为不采集。
-	observability.InitAndRegister(constants.ServiceNameArticle, cfg.OTel)
+	observability.InitAndRegister(serviceName, cfg.OTel)
 
 	// ③ 初始化指标
-	metrics.Init(constants.ServiceNameArticle)
+	metrics.Init(serviceName)
 	// 周期性刷新运行时指标（内存/goroutine）并上报服务健康状态，消除 dashboard 长期 0 / No data。
 	metricsCtx, metricsCancelFn := context.WithCancel(context.Background())
 	metricsCancel = metricsCancelFn
 	metrics.StartRuntimeMetrics(metricsCtx, 15*time.Second)
-	metrics.StartHealthReporter(metricsCtx, constants.ServiceNameArticle, 10*time.Second, database.Ping, cache.Ping)
+	metrics.StartHealthReporter(metricsCtx, serviceName, 10*time.Second, database.Ping, cache.Ping)
 
 	// ④ 配置中心热更：从 Consul KV 拉取热更配置（限流阈值/日志级别等），
 	// 缺失时降级到 config_xxx.yaml 默认值（不致命）。Load 会回写 cfg.RateLimit，
@@ -341,6 +350,10 @@ func run() error {
 
 	// ⑧ 装配并启动服务（Run 内部监听信号并优雅关闭 HTTP/gRPC）
 	server := NewServer(cfg, db)
+
+	// ⑧.1 best-effort 注册文章榜单配置 + 历史回填（ranking 可能未就绪，后台有限重试，不阻塞启动）
+	go initRanking(server.articleSvc)
+
 	if err := server.Run(); err != nil {
 		return fmt.Errorf("server error: %v", err)
 	}
@@ -418,4 +431,28 @@ func registerToConsul(cfg *goconfig.Config) (func() error, error) {
 		return nil, fmt.Errorf("failed to register to consul: %v", err)
 	}
 	return deregister, nil
+}
+
+// initRanking 注册文章维度榜单配置并做一次历史回填。ranking-service 可能尚未就绪，
+// 内置有限重试；注册成功后执行回填。任一环节失败仅告警，不影响主流程。
+func initRanking(svc service.ArticleService) {
+	for i := 0; i < 5; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err := client.RegisterArticleBoards(ctx)
+		cancel()
+		if err == nil {
+			log.Info("article ranking boards registered")
+			bfCtx, bfCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if berr := svc.BackfillRanking(bfCtx); berr != nil {
+				log.Warnf("backfill article ranking boards failed: %v", berr)
+			} else {
+				log.Info("article ranking boards backfilled")
+			}
+			bfCancel()
+			return
+		}
+		log.Warnf("register article ranking boards failed (attempt %d/5): %v", i+1, err)
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	log.Warnf("register article ranking boards given up after retries")
 }

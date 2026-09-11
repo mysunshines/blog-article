@@ -4,15 +4,14 @@
 // 	protoc        v6.33.4
 // source: article.proto
 
-package pb
+package v1
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -3901,7 +3900,7 @@ const file_article_proto_rawDesc = "" +
 	"\x12AdminDeleteArticle\x12%.article.v1.AdminDeleteArticleRequest\x1a&.article.v1.AdminDeleteArticleResponse\x12W\n" +
 	"\x0eCreateCategory\x12!.article.v1.CreateCategoryRequest\x1a\".article.v1.CreateCategoryResponse\x12W\n" +
 	"\x0eUpdateCategory\x12!.article.v1.UpdateCategoryRequest\x1a\".article.v1.UpdateCategoryResponse\x12W\n" +
-	"\x0eDeleteCategory\x12!.article.v1.DeleteCategoryRequest\x1a\".article.v1.DeleteCategoryResponseB.Z,github.com/mysunshines/blog-article/proto/pbb\x06proto3"
+	"\x0eDeleteCategory\x12!.article.v1.DeleteCategoryRequest\x1a\".article.v1.DeleteCategoryResponseB1Z/github.com/mysunshines/blog-article/proto/pb/v1b\x06proto3"
 
 var (
 	file_article_proto_rawDescOnce sync.Once

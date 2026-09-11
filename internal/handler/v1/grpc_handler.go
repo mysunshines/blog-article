@@ -6,7 +6,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/service"
-	article "github.com/mysunshines/blog-article/proto/pb"
+	article "github.com/mysunshines/blog-article/proto/pb/v1"
 	"github.com/mysunshines/gocommon/constants"
 	commonmiddleware "github.com/mysunshines/gocommon/middleware"
 	"github.com/mysunshines/gocommon/util"

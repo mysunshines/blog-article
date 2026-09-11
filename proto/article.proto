@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package article.v1;
 
-option go_package = "github.com/mysunshines/blog-article/proto/pb";
+option go_package = "github.com/mysunshines/blog-article/proto/pb/v1";
 
 // ============================================================================
 // gRPC Contract (source of truth for article-service)

@@ -1,31 +1,48 @@
+# ============================================================
+# article-service 配置（本地开发环境 / development）
+# ------------------------------------------------------------
+# 环境切换（优先级从高到低）：
+#   1. CONFIG_PATH 环境变量显式指定
+#   2. config/config_${APP_ENV}.yaml（APP_ENV=test|production）
+#   3. config/config.yaml（本文件，APP_ENV 未设置或为 development）
+#
+# 全仓库统一约定（详见 README「端口分配」与「配置规范」）：
+#   - 端口段：HTTP 808x / gRPC 91xx / Metrics 909x
+#   - 时间单位：所有 expire_time / *_sec / *_ttl 字段统一为「秒」
+#   - 段落顺序：app → grpc → http → database → redis → jwt → consul
+#              → metrics → rate_limit → server → loki → otel
+#
+# 说明：CORS 不由本文件的 cors 段控制，而是由环境变量 CORS_ALLOW_ORIGINS 提供
+#       （gocommon middleware.CORSMiddleware 读取），原 cors 段为无效配置，已移除。
+# ============================================================
+
 app:
   name: "article-service"
   env: "development"
   log_dir: "./logs"
   log_level: "info"
 
-# HTTP 服务配置
-http:
-  host: "0.0.0.0"
-  port: 8082
-
-# gRPC 服务配置
+# gRPC：唯一业务入口（C 端流量经 gateway 动态转发至此）
 grpc:
   host: "0.0.0.0"
   port: 9102
 
-# 数据库配置
+# HTTP：健康检查 / 就绪探针；业务 API 亦经此端口，便于直连调试。
+# 另有 grpc-gateway 调试端口 8084（ARTICLE_GW_DEBUG_PORT 可覆盖），仅联调用。
+http:
+  host: "0.0.0.0"
+  port: 8082
+
 database:
   host: "localhost"
   port: 3306
-  user: "bloguser"
-  password: "blogpassword"
+  user: "root"
+  password: "root123"
   name: "blog"
-  max_open_conns: 100
-  max_idle_conns: 10
+  max_open_conns: 25
+  max_idle_conns: 5
   conn_max_lifetime: 3600
 
-# Redis 配置
 redis:
   host: "localhost"
   port: 6379
@@ -33,64 +50,52 @@ redis:
   db: 0
   pool_size: 100
 
-# JWT 配置
 jwt:
   secret: "your-secret-key-change-in-production"
-  expire_time: 604800
+  expire_time: 604800  # 秒；7 天
 
-# Consul 注册中心配置
 consul:
   address: "localhost:8500"
   check_interval: 10
   deregister_critical: 30
 
-# Prometheus 指标配置
 metrics:
   enabled: true
   path: "/metrics"
   port: 9092
 
-# 限流配置
+# 入站限流（令牌桶）：内部 gRPC 调用为主，阈值放宽；
+# C 端流量的严格限流（发文/改文等）由 gateway 的 rate_limit.rules 承担。
 rate_limit:
   enabled: true
-  qps: 1000
-  burst: 2000
+  qps: 2000
+  burst: 4000
 
-# CORS 配置
-cors:
-  enabled: true
-  allow_origins:
-    - "http://localhost:8080"
-    - "http://localhost:3000"
-  allow_methods:
-    - "GET"
-    - "POST"
-    - "PUT"
-    - "DELETE"
-    - "OPTIONS"
-  allow_headers:
-    - "Origin"
-    - "Content-Type"
-    - "Authorization"
-  expose_headers:
-    - "Content-Length"
-  allow_credentials: true
-  max_age: 86400
+# 入站 server 调优（单位：秒）。
+# 键名须与 gocommon config.ServerConfig 严格对应（server.grpc.* / server.http.* 为嵌套结构），
+# 写错键名会被 yaml 静默忽略；可由配置中心 HotConfig.server 热更覆盖。
+server:
+  grpc:
+    default_timeout_sec: 10
+    max_connection_idle_sec: 60
+    max_connection_age_sec: 120
+    max_connection_age_grace_sec: 30
+    min_ping_interval_sec: 30
+    max_concurrent_streams: 100
+  http:
+    read_timeout_sec: 30
+    read_header_timeout_sec: 10
+    write_timeout_sec: 30
+    idle_timeout_sec: 120
+    default_timeout_sec: 30
 
-# ============================================================================
-# 可观测性（想法 3 · A+B 统一链路追踪与集中日志）
-# 默认全部关闭（enabled:false），仅配置好基础设施并显式开启后才生效，对现有部署零影响。
-# ============================================================================
-
-# Loki 集中日志（方案 A）：各服务结构化日志异步推送到 Loki，gateway 的
-# GET /admin/trace?trace_id= 据此聚合全链路日志。
+# 可观测性（Loki 集中日志 + OTel 链路追踪）：默认关闭，
+# `make observ-up` 拉起基础设施后置为 true 即可接入。
 loki:
   enabled: false
   url: "http://loki:3100/loki/api/v1/push"
   tenant_id: ""
 
-# OpenTelemetry 链路追踪（方案 B）：trace 经 OTLP 上报到 otel-collector，
-# 再由 collector 转发到 Tempo/Jaeger。trace_id 即日志中的 trace_id，与 Loki 共用。
 otel:
   enabled: false
   endpoint: "otel-collector:4317"
