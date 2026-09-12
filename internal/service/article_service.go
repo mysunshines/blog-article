@@ -422,6 +422,9 @@ func (s *articleService) flushViewCounts() {
 // BackfillRanking 历史回填四个榜单（浏览/点赞/评论/作者），以 DB 当前值为权威快照，
 // 批量覆盖 ZSET 并移除已消失成员（prune_others）。best-effort：单榜失败仅记录日志。
 func (s *articleService) BackfillRanking(ctx context.Context) error {
+	// 快照起始时刻：随批量写入传给 ranking 用于「不回退」保护——
+	// 跳过在此之后又发生过增量变更的成员，避免旧快照覆盖掉新增量导致分数回退。
+	snapshotMs := time.Now().UnixMilli()
 	const batchSize = 500
 	views := make(map[string]float64)
 	likes := make(map[string]float64)
@@ -467,7 +470,7 @@ func (s *articleService) BackfillRanking(ctx context.Context) error {
 		{client.BoardAuthorArticles, authorItems},
 	}
 	for _, b := range boards {
-		if err := client.BatchSetScore(ctx, b.board, b.items, true); err != nil {
+		if err := client.BatchSetScore(ctx, b.board, b.items, true, snapshotMs); err != nil {
 			log.Printf("[ranking] backfill board %s failed: %v", b.board, err)
 		}
 	}

@@ -63,7 +63,11 @@ func RecordScore(ctx context.Context, board, member string, op pb.ScoreOp, delta
 }
 
 // BatchSetScore 批量覆盖设置榜单（历史回填）。pruneOthers=true 时移除 ZSET 中不在 items 内的旧成员。
-func BatchSetScore(ctx context.Context, board string, items map[string]float64, pruneOthers bool) error {
+//
+// snapshotMs 为快照时间（Unix 毫秒，即开始读 DB 快照的时刻）。>0 时 ranking 开启
+// 「不回退」保护：跳过"最后更新时间晚于该值"的成员，避免用旧快照覆盖掉快照之后
+// 发生的增量；传 0 则强制全量覆盖。
+func BatchSetScore(ctx context.Context, board string, items map[string]float64, pruneOthers bool, snapshotMs int64) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -73,9 +77,10 @@ func BatchSetScore(ctx context.Context, board string, items map[string]float64, 
 	}
 	var resp pb.BatchSetScoreResponse
 	if err := grpcclient.SendRequest(ctx, v0pb.RankingService_BatchSetScore_FullMethodName, &pb.BatchSetScoreRequest{
-		Board:       board,
-		Items:       pbItems,
-		PruneOthers: pruneOthers,
+		Board:         board,
+		Items:         pbItems,
+		PruneOthers:   pruneOthers,
+		SkipNewerThan: snapshotMs,
 	}, &resp); err != nil {
 		return err
 	}

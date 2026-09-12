@@ -8,7 +8,7 @@ require (
 	github.com/mysunshines/blog-notification v1.0.2
 	github.com/mysunshines/blog-ranking v0.0.0-00010101000000-000000000000
 	github.com/mysunshines/blog-user v1.4.1
-	github.com/mysunshines/gocommon v1.7.0
+	github.com/mysunshines/gocommon v1.8.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
 	golang.org/x/sync v0.22.0

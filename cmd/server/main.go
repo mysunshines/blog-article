@@ -27,6 +27,7 @@ import (
 	"github.com/mysunshines/gocommon/metrics"
 	"github.com/mysunshines/gocommon/middleware"
 	"github.com/mysunshines/gocommon/observability"
+	"github.com/mysunshines/gocommon/periodic"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sony/gobreaker"
@@ -47,6 +48,8 @@ var (
 	// serviceName 当前服务名（取自配置 cfg.App.Name），供 main 顶层 defer 与 run 内共用，
 	// 避免硬编码 gocommon 的 constants.ServiceNameXxx。
 	serviceName string
+	// rankingCancel 取消榜单自愈周期任务（register / backfill），在 shutdown 时调用。
+	rankingCancel context.CancelFunc
 )
 
 type Server struct {
@@ -352,7 +355,10 @@ func run() error {
 	server := NewServer(cfg, db)
 
 	// ⑧.1 best-effort 注册文章榜单配置 + 历史回填（ranking 可能未就绪，后台有限重试，不阻塞启动）
-	go initRanking(server.articleSvc)
+	// 周期调度与多实例单飞由 gocommon/periodic 处理；ctx 在 shutdown 时取消以停止任务。
+	rankingCtx, stopRanking := context.WithCancel(context.Background())
+	rankingCancel = stopRanking
+	go initRanking(rankingCtx, server.articleSvc)
 
 	if err := server.Run(); err != nil {
 		return fmt.Errorf("server error: %v", err)
@@ -365,6 +371,10 @@ func run() error {
 
 // shutdown 正常退出路径释放：先摘流量，再交由 releaseInfra 释放全局资源。
 func shutdown() {
+	// 0. 先停止榜单自愈周期任务，避免退出过程中仍在读写下游
+	if rankingCancel != nil {
+		rankingCancel()
+	}
 	// 1. 先从 Consul 注销，摘除流量（让网关停止转发新请求）
 	if deregister != nil {
 		if err := deregister(); err != nil {
@@ -444,38 +454,36 @@ func registerToConsul(cfg *goconfig.Config) (func() error, error) {
 const (
 	rankReRegisterInterval = 5 * time.Minute
 	rankBackfillInterval   = 60 * time.Minute
+	rankBackfillTimeout    = 60 * time.Second
 )
 
-// initRanking 注册文章维度榜单配置并做一次历史回填；随后常驻周期自愈循环。
-// ranking-service 可能尚未就绪，故注册内置有限重试；任一环节失败仅告警，不阻塞启动。
-// 以 goroutine 方式运行（见 run 中的 go initRanking），与进程同生命周期。
-func initRanking(svc service.ArticleService) {
-	// 启动即执行一次完整流程（注册 + 回填），保证冷启动后榜单立即可用。
-	if err := registerArticleBoards(); err != nil {
-		log.Warnf("register article ranking boards given up after retries: %v", err)
-	} else {
-		backfillRanking(svc)
-	}
+// initRanking 注册文章维度榜单配置并按 DB 快照重建榜单，随后常驻周期自愈。
+// 调度、单次超时、多实例单飞、失败日志均由 gocommon/periodic 统一处理，
+// 这里只描述"做什么"。ctx 取消（进程退出时由 shutdown 触发）即停止两个任务。
+func initRanking(ctx context.Context, svc service.ArticleService) {
+	// 重注册配置：幂等且轻量，不单飞——任一实例成功即完成恢复，多跑几次只是
+	// 浪费几次 gRPC，换来的是配置能在最短时间内被补上。
+	go periodic.Run(ctx, periodic.Options{
+		Name:           "ranking:register-boards",
+		Interval:       rankReRegisterInterval,
+		Timeout:        30 * time.Second, // 覆盖 registerArticleBoards 内的退避重试
+		RunImmediately: true,
+	}, func(ctx context.Context) error {
+		return registerArticleBoards()
+	})
 
-	reRegister := time.NewTicker(rankReRegisterInterval)
-	backfill := time.NewTicker(rankBackfillInterval)
-	defer reRegister.Stop()
-	defer backfill.Stop()
-
-	for {
-		select {
-		case <-reRegister.C:
-			// 仅重注册配置（幂等、轻量），不触发全表扫描。
-			if err := registerArticleBoards(); err != nil {
-				log.Warnf("periodic re-register article ranking boards failed: %v", err)
-			}
-		case <-backfill.C:
-			// 以 DB 当前值为权威快照重建四榜：既覆盖数据丢失，也修正增量累计误差。
-			if err := registerArticleBoards(); err == nil {
-				backfillRanking(svc)
-			}
-		}
-	}
+	// 历史回填：全表扫描 + 全量覆盖 ZSET，必须单飞（LeaderOnly）——
+	// 多实例并发会造成 N 倍 DB 压力，并互相覆盖（后写覆盖先写）。
+	go periodic.Run(ctx, periodic.Options{
+		Name:           "ranking:backfill",
+		Interval:       rankBackfillInterval,
+		Timeout:        rankBackfillTimeout,
+		LockTTL:        10 * time.Minute, // > Timeout；持锁实例崩溃时最多 10 分钟被接管
+		RunImmediately: true,
+		LeaderOnly:     true,
+	}, func(ctx context.Context) error {
+		return svc.BackfillRanking(ctx)
+	})
 }
 
 // registerArticleBoards 注册文章维度榜单配置（幂等，可安全重复调用）。
@@ -494,15 +502,4 @@ func registerArticleBoards() error {
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 	return lastErr
-}
-
-// backfillRanking 以 DB 当前值为权威快照重建四个榜单，best-effort（失败仅告警）。
-func backfillRanking(svc service.ArticleService) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := svc.BackfillRanking(ctx); err != nil {
-		log.Warnf("backfill article ranking boards failed: %v", err)
-		return
-	}
-	log.Info("article ranking boards backfilled")
 }
