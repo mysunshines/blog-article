@@ -6,9 +6,9 @@ exclude google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 
 require (
 	github.com/mysunshines/blog-notification v1.0.2
-	github.com/mysunshines/blog-ranking v0.0.0-00010101000000-000000000000
+	github.com/mysunshines/blog-ranking v1.0.4
 	github.com/mysunshines/blog-user v1.4.1
-	github.com/mysunshines/gocommon v1.8.0
+	github.com/mysunshines/gocommon v1.9.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
 	golang.org/x/sync v0.22.0
@@ -84,10 +84,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.5.7 // indirect
 )
-
-// 本地开发：以同仓库的 ranking-service / user-service / notification-service 模块作为来源
-// （与发布 tag 等价，仅本地联调使用；生产构建应改为 require 发布版本，删除这些 replace）。
-replace github.com/mysunshines/blog-ranking => ../ranking-service
 
 replace github.com/mysunshines/blog-user => ../user-service
 
