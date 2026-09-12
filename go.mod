@@ -5,9 +5,9 @@ go 1.25.0
 exclude google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 
 require (
-	github.com/mysunshines/blog-notification v1.0.2
+	github.com/mysunshines/blog-notification v1.0.4
 	github.com/mysunshines/blog-ranking v1.0.4
-	github.com/mysunshines/blog-user v1.4.1
+	github.com/mysunshines/blog-user v1.4.4
 	github.com/mysunshines/gocommon v1.9.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sony/gobreaker v0.5.0
@@ -84,7 +84,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.5.7 // indirect
 )
-
-replace github.com/mysunshines/blog-user => ../user-service
-
-replace github.com/mysunshines/blog-notification => ../notification-service
