@@ -433,26 +433,76 @@ func registerToConsul(cfg *goconfig.Config) (func() error, error) {
 	return deregister, nil
 }
 
-// initRanking 注册文章维度榜单配置并做一次历史回填。ranking-service 可能尚未就绪，
-// 内置有限重试；注册成功后执行回填。任一环节失败仅告警，不影响主流程。
+// 榜单自愈周期。Redis 已开启 AOF + 数据卷持久化（见 docker-compose.infra.yml），
+// 常规重启不会丢数据；这里的周期任务用于应对极端情况（如 redis_data 数据卷被删除、
+// 或 ranking 未就绪导致启动注册失败），使榜单配置与分数无需人工重启即可自愈：
+//   - 重注册配置：幂等且轻量（仅几次 gRPC 调用），可较频繁；
+//   - 历史回填：以 DB 为权威快照全量重建，需扫描 articles 表，较重，故低频。
+//
+// 注意：配置与分数的"源真相"都不在 Redis（分别在业务代码声明与 MySQL articles 表），
+// 因此重放是安全的——见 ranking-service/README.md 的"分数摄入与一致性"一节。
+const (
+	rankReRegisterInterval = 5 * time.Minute
+	rankBackfillInterval   = 60 * time.Minute
+)
+
+// initRanking 注册文章维度榜单配置并做一次历史回填；随后常驻周期自愈循环。
+// ranking-service 可能尚未就绪，故注册内置有限重试；任一环节失败仅告警，不阻塞启动。
+// 以 goroutine 方式运行（见 run 中的 go initRanking），与进程同生命周期。
 func initRanking(svc service.ArticleService) {
+	// 启动即执行一次完整流程（注册 + 回填），保证冷启动后榜单立即可用。
+	if err := registerArticleBoards(); err != nil {
+		log.Warnf("register article ranking boards given up after retries: %v", err)
+	} else {
+		backfillRanking(svc)
+	}
+
+	reRegister := time.NewTicker(rankReRegisterInterval)
+	backfill := time.NewTicker(rankBackfillInterval)
+	defer reRegister.Stop()
+	defer backfill.Stop()
+
+	for {
+		select {
+		case <-reRegister.C:
+			// 仅重注册配置（幂等、轻量），不触发全表扫描。
+			if err := registerArticleBoards(); err != nil {
+				log.Warnf("periodic re-register article ranking boards failed: %v", err)
+			}
+		case <-backfill.C:
+			// 以 DB 当前值为权威快照重建四榜：既覆盖数据丢失，也修正增量累计误差。
+			if err := registerArticleBoards(); err == nil {
+				backfillRanking(svc)
+			}
+		}
+	}
+}
+
+// registerArticleBoards 注册文章维度榜单配置（幂等，可安全重复调用）。
+// ranking-service 可能尚未就绪，内置有限重试（递增退避）。
+func registerArticleBoards() error {
+	var lastErr error
 	for i := 0; i < 5; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		err := client.RegisterArticleBoards(ctx)
 		cancel()
 		if err == nil {
-			log.Info("article ranking boards registered")
-			bfCtx, bfCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			if berr := svc.BackfillRanking(bfCtx); berr != nil {
-				log.Warnf("backfill article ranking boards failed: %v", berr)
-			} else {
-				log.Info("article ranking boards backfilled")
-			}
-			bfCancel()
-			return
+			return nil
 		}
+		lastErr = err
 		log.Warnf("register article ranking boards failed (attempt %d/5): %v", i+1, err)
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
-	log.Warnf("register article ranking boards given up after retries")
+	return lastErr
+}
+
+// backfillRanking 以 DB 当前值为权威快照重建四个榜单，best-effort（失败仅告警）。
+func backfillRanking(svc service.ArticleService) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := svc.BackfillRanking(ctx); err != nil {
+		log.Warnf("backfill article ranking boards failed: %v", err)
+		return
+	}
+	log.Info("article ranking boards backfilled")
 }
