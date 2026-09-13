@@ -39,16 +39,17 @@ func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.Cre
 		return nil, err
 	}
 	createdArticle, err := h.Svc.CreateArticle(ctx, &model.CreateArticleRequest{
-		UserID:       uid,
-		Title:        req.Title,
-		Content:      req.Content,
-		Summary:      req.Summary,
-		CoverImage:   req.CoverImage,
-		CategoryID:   uint(req.CategoryId),
-		Tags:         req.Tags,
-		IsFeatured:   req.IsFeatured,
-		AllowComment: req.AllowComment,
-		IsPublished:  req.IsPublished,
+		UserID:        uid,
+		Title:         req.Title,
+		Content:       req.Content,
+		ContentFormat: int8(req.GetContentFormat()),
+		Summary:       req.Summary,
+		CoverImage:    req.CoverImage,
+		CategoryID:    uint(req.CategoryId),
+		Tags:          req.Tags,
+		IsFeatured:    req.IsFeatured,
+		AllowComment:  req.AllowComment,
+		IsPublished:   req.IsPublished,
 	})
 
 	if err != nil {
@@ -116,16 +117,17 @@ func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.Upd
 		return nil, err
 	}
 	updatedArticle, err := h.Svc.UpdateArticle(ctx, uint(req.ArticleId), &model.UpdateArticleRequest{
-		UserID:       uid,
-		Title:        req.Title,
-		Content:      req.Content,
-		Summary:      req.Summary,
-		CoverImage:   req.CoverImage,
-		CategoryID:   uint(req.CategoryId),
-		Tags:         req.Tags,
-		IsFeatured:   req.IsFeatured,
-		AllowComment: req.AllowComment,
-		IsPublished:  req.IsPublished,
+		UserID:        uid,
+		Title:         req.Title,
+		Content:       req.Content,
+		ContentFormat: int8(req.GetContentFormat()),
+		Summary:       req.Summary,
+		CoverImage:    req.CoverImage,
+		CategoryID:    uint(req.CategoryId),
+		Tags:          req.Tags,
+		IsFeatured:    req.IsFeatured,
+		AllowComment:  req.AllowComment,
+		IsPublished:   req.IsPublished,
 	})
 	if err != nil {
 		return &article.UpdateArticleResponse{

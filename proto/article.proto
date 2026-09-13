@@ -87,6 +87,8 @@ message Article {
     string slug = 5;
     string summary = 6;
     string content = 7;
+    // 正文存储格式：1=Markdown（历史）；2=富文本 HTML
+    int32 content_format = 15;
     string cover_image = 8;
     uint32 category_id = 9;
     string category_name = 10;
@@ -125,6 +127,8 @@ message CreateArticleRequest {
     uint32 user_id = 1;
     string title = 2;
     string content = 3;
+    // 正文存储格式：1=Markdown（缺省，兼容旧客户端）；2=富文本 HTML（编辑器产出，服务端会净化后入库）
+    int32 content_format = 12;
     string summary = 4;
     string cover_image = 5;
     uint32 category_id = 6;
@@ -156,6 +160,8 @@ message UpdateArticleRequest {
     uint32 user_id = 2;
     string title = 3;
     string content = 4;
+    // 正文存储格式：0/缺省=保持该文章原格式；1=Markdown；2=富文本 HTML
+    int32 content_format = 13;
     string summary = 5;
     string cover_image = 6;
     uint32 category_id = 7;

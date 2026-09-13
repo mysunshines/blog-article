@@ -99,27 +99,29 @@ func (ArticleErrorCode) EnumDescriptor() ([]byte, []int) {
 }
 
 type Article struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	UserId        uint32                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Username      string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
-	Title         string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
-	Slug          string                 `protobuf:"bytes,5,opt,name=slug,proto3" json:"slug,omitempty"`
-	Summary       string                 `protobuf:"bytes,6,opt,name=summary,proto3" json:"summary,omitempty"`
-	Content       string                 `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
-	CoverImage    string                 `protobuf:"bytes,8,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
-	CategoryId    uint32                 `protobuf:"varint,9,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
-	CategoryName  string                 `protobuf:"bytes,10,opt,name=category_name,json=categoryName,proto3" json:"category_name,omitempty"`
-	Tags          []string               `protobuf:"bytes,11,rep,name=tags,proto3" json:"tags,omitempty"`
-	ViewCount     uint32                 `protobuf:"varint,12,opt,name=view_count,json=viewCount,proto3" json:"view_count,omitempty"`
-	CommentCount  uint32                 `protobuf:"varint,13,opt,name=comment_count,json=commentCount,proto3" json:"comment_count,omitempty"`
-	LikeCount     uint32                 `protobuf:"varint,14,opt,name=like_count,json=likeCount,proto3" json:"like_count,omitempty"`
-	IsFeatured    bool                   `protobuf:"varint,16,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
-	AllowComment  bool                   `protobuf:"varint,17,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
-	CreatedAt     string                 `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     string                 `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	PublishedAt   string                 `protobuf:"bytes,20,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
-	Status        string                 `protobuf:"bytes,21,opt,name=status,proto3" json:"status,omitempty"` // 文章状态: draft/pending/published/offline/rejected
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       uint32                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	UserId   uint32                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Username string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
+	Title    string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
+	Slug     string                 `protobuf:"bytes,5,opt,name=slug,proto3" json:"slug,omitempty"`
+	Summary  string                 `protobuf:"bytes,6,opt,name=summary,proto3" json:"summary,omitempty"`
+	Content  string                 `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
+	// 正文存储格式：1=Markdown（历史）；2=富文本 HTML
+	ContentFormat int32    `protobuf:"varint,15,opt,name=content_format,json=contentFormat,proto3" json:"content_format,omitempty"`
+	CoverImage    string   `protobuf:"bytes,8,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
+	CategoryId    uint32   `protobuf:"varint,9,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
+	CategoryName  string   `protobuf:"bytes,10,opt,name=category_name,json=categoryName,proto3" json:"category_name,omitempty"`
+	Tags          []string `protobuf:"bytes,11,rep,name=tags,proto3" json:"tags,omitempty"`
+	ViewCount     uint32   `protobuf:"varint,12,opt,name=view_count,json=viewCount,proto3" json:"view_count,omitempty"`
+	CommentCount  uint32   `protobuf:"varint,13,opt,name=comment_count,json=commentCount,proto3" json:"comment_count,omitempty"`
+	LikeCount     uint32   `protobuf:"varint,14,opt,name=like_count,json=likeCount,proto3" json:"like_count,omitempty"`
+	IsFeatured    bool     `protobuf:"varint,16,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
+	AllowComment  bool     `protobuf:"varint,17,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
+	CreatedAt     string   `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     string   `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PublishedAt   string   `protobuf:"bytes,20,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
+	Status        string   `protobuf:"bytes,21,opt,name=status,proto3" json:"status,omitempty"` // 文章状态: draft/pending/published/offline/rejected
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -201,6 +203,13 @@ func (x *Article) GetContent() string {
 		return x.Content
 	}
 	return ""
+}
+
+func (x *Article) GetContentFormat() int32 {
+	if x != nil {
+		return x.ContentFormat
+	}
+	return 0
 }
 
 func (x *Article) GetCoverImage() string {
@@ -471,16 +480,18 @@ func (x *Tag) GetCreatedAt() string {
 }
 
 type CreateArticleRequest struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	UserId       uint32                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Title        string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	Content      string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	Summary      string                 `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
-	CoverImage   string                 `protobuf:"bytes,5,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
-	CategoryId   uint32                 `protobuf:"varint,6,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
-	Tags         []string               `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`
-	IsFeatured   bool                   `protobuf:"varint,9,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
-	AllowComment bool                   `protobuf:"varint,10,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	UserId  uint32                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Title   string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Content string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	// 正文存储格式：1=Markdown（缺省，兼容旧客户端）；2=富文本 HTML（编辑器产出，服务端会净化后入库）
+	ContentFormat int32    `protobuf:"varint,12,opt,name=content_format,json=contentFormat,proto3" json:"content_format,omitempty"`
+	Summary       string   `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	CoverImage    string   `protobuf:"bytes,5,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
+	CategoryId    uint32   `protobuf:"varint,6,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
+	Tags          []string `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`
+	IsFeatured    bool     `protobuf:"varint,9,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
+	AllowComment  bool     `protobuf:"varint,10,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
 	// true=立即发布(进入待审核 pending, 先发后审可见); false/缺省=存为草稿 draft(仅作者可见)
 	IsPublished   bool `protobuf:"varint,11,opt,name=is_published,json=isPublished,proto3" json:"is_published,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -536,6 +547,13 @@ func (x *CreateArticleRequest) GetContent() string {
 		return x.Content
 	}
 	return ""
+}
+
+func (x *CreateArticleRequest) GetContentFormat() int32 {
+	if x != nil {
+		return x.ContentFormat
+	}
+	return 0
 }
 
 func (x *CreateArticleRequest) GetSummary() string {
@@ -752,17 +770,19 @@ func (x *GetArticleResponse) GetArticle() *Article {
 }
 
 type UpdateArticleRequest struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	ArticleId    uint32                 `protobuf:"varint,1,opt,name=article_id,json=articleId,proto3" json:"article_id,omitempty"`
-	UserId       uint32                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Title        string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
-	Content      string                 `protobuf:"bytes,4,opt,name=content,proto3" json:"content,omitempty"`
-	Summary      string                 `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
-	CoverImage   string                 `protobuf:"bytes,6,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
-	CategoryId   uint32                 `protobuf:"varint,7,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
-	Tags         []string               `protobuf:"bytes,8,rep,name=tags,proto3" json:"tags,omitempty"`
-	IsFeatured   bool                   `protobuf:"varint,10,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
-	AllowComment bool                   `protobuf:"varint,11,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ArticleId uint32                 `protobuf:"varint,1,opt,name=article_id,json=articleId,proto3" json:"article_id,omitempty"`
+	UserId    uint32                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Title     string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Content   string                 `protobuf:"bytes,4,opt,name=content,proto3" json:"content,omitempty"`
+	// 正文存储格式：0/缺省=保持该文章原格式；1=Markdown；2=富文本 HTML
+	ContentFormat int32    `protobuf:"varint,13,opt,name=content_format,json=contentFormat,proto3" json:"content_format,omitempty"`
+	Summary       string   `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
+	CoverImage    string   `protobuf:"bytes,6,opt,name=cover_image,json=coverImage,proto3" json:"cover_image,omitempty"`
+	CategoryId    uint32   `protobuf:"varint,7,opt,name=category_id,json=categoryId,proto3" json:"category_id,omitempty"`
+	Tags          []string `protobuf:"bytes,8,rep,name=tags,proto3" json:"tags,omitempty"`
+	IsFeatured    bool     `protobuf:"varint,10,opt,name=is_featured,json=isFeatured,proto3" json:"is_featured,omitempty"`
+	AllowComment  bool     `protobuf:"varint,11,opt,name=allow_comment,json=allowComment,proto3" json:"allow_comment,omitempty"`
 	// true=保存并立即发布(转 pending); false=仅保存草稿(draft, 不改变已有的非草稿状态时保持原状由调用方决定)
 	IsPublished   bool `protobuf:"varint,12,opt,name=is_published,json=isPublished,proto3" json:"is_published,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -825,6 +845,13 @@ func (x *UpdateArticleRequest) GetContent() string {
 		return x.Content
 	}
 	return ""
+}
+
+func (x *UpdateArticleRequest) GetContentFormat() int32 {
+	if x != nil {
+		return x.ContentFormat
+	}
+	return 0
 }
 
 func (x *UpdateArticleRequest) GetSummary() string {
@@ -3574,7 +3601,7 @@ var File_article_proto protoreflect.FileDescriptor
 const file_article_proto_rawDesc = "" +
 	"\n" +
 	"\rarticle.proto\x12\n" +
-	"article.v1\"\xc9\x04\n" +
+	"article.v1\"\xf0\x04\n" +
 	"\aArticle\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\rR\x06userId\x12\x1a\n" +
@@ -3582,7 +3609,8 @@ const file_article_proto_rawDesc = "" +
 	"\x05title\x18\x04 \x01(\tR\x05title\x12\x12\n" +
 	"\x04slug\x18\x05 \x01(\tR\x04slug\x12\x18\n" +
 	"\asummary\x18\x06 \x01(\tR\asummary\x12\x18\n" +
-	"\acontent\x18\a \x01(\tR\acontent\x12\x1f\n" +
+	"\acontent\x18\a \x01(\tR\acontent\x12%\n" +
+	"\x0econtent_format\x18\x0f \x01(\x05R\rcontentFormat\x12\x1f\n" +
 	"\vcover_image\x18\b \x01(\tR\n" +
 	"coverImage\x12\x1f\n" +
 	"\vcategory_id\x18\t \x01(\rR\n" +
@@ -3620,11 +3648,12 @@ const file_article_proto_rawDesc = "" +
 	"\x04slug\x18\x03 \x01(\tR\x04slug\x12#\n" +
 	"\rarticle_count\x18\x04 \x01(\rR\farticleCount\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\tR\tcreatedAt\"\xb8\x02\n" +
+	"created_at\x18\x05 \x01(\tR\tcreatedAt\"\xdf\x02\n" +
 	"\x14CreateArticleRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\rR\x06userId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x18\n" +
-	"\acontent\x18\x03 \x01(\tR\acontent\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12%\n" +
+	"\x0econtent_format\x18\f \x01(\x05R\rcontentFormat\x12\x18\n" +
 	"\asummary\x18\x04 \x01(\tR\asummary\x12\x1f\n" +
 	"\vcover_image\x18\x05 \x01(\tR\n" +
 	"coverImage\x12\x1f\n" +
@@ -3646,13 +3675,14 @@ const file_article_proto_rawDesc = "" +
 	"\x12GetArticleResponse\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12-\n" +
-	"\aarticle\x18\x03 \x01(\v2\x13.article.v1.ArticleR\aarticle\"\xd7\x02\n" +
+	"\aarticle\x18\x03 \x01(\v2\x13.article.v1.ArticleR\aarticle\"\xfe\x02\n" +
 	"\x14UpdateArticleRequest\x12\x1d\n" +
 	"\n" +
 	"article_id\x18\x01 \x01(\rR\tarticleId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\rR\x06userId\x12\x14\n" +
 	"\x05title\x18\x03 \x01(\tR\x05title\x12\x18\n" +
-	"\acontent\x18\x04 \x01(\tR\acontent\x12\x18\n" +
+	"\acontent\x18\x04 \x01(\tR\acontent\x12%\n" +
+	"\x0econtent_format\x18\r \x01(\x05R\rcontentFormat\x12\x18\n" +
 	"\asummary\x18\x05 \x01(\tR\asummary\x12\x1f\n" +
 	"\vcover_image\x18\x06 \x01(\tR\n" +
 	"coverImage\x12\x1f\n" +
