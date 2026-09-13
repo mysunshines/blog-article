@@ -15,13 +15,26 @@ const (
 	ArticleStatusRejected  = "rejected"  // 已拒绝
 )
 
+// 文章正文存储格式（articles.content_format）
+//
+// 历史文章以 Markdown 存储，读取时由后端渲染为安全 HTML；
+// 富文本编辑器（Tiptap）产出的正文是 HTML，直接存储并在读取时再净化一次。
+// 保留该标记可让两种格式共存，旧文章无需批量转换即可正常展示。
+const (
+	ContentFormatMarkdown int8 = 1 // Markdown（历史格式，读取时 RenderMarkdown）
+	ContentFormatHTML     int8 = 2 // 富文本 HTML（编辑器产出，读取时 SanitizeHTML）
+)
+
 type Article struct {
-	ID            uint           `gorm:"primaryKey" json:"id"`
-	UserID        uint           `gorm:"index" json:"user_id"`
-	Title         string         `gorm:"size:256" json:"title"`
-	Slug          string         `gorm:"uniqueIndex;size:256" json:"slug"`
-	Summary       string         `gorm:"size:512" json:"summary"`
-	Content       string         `gorm:"type:text" json:"content"`
+	ID      uint   `gorm:"primaryKey" json:"id"`
+	UserID  uint   `gorm:"index" json:"user_id"`
+	Title   string `gorm:"size:256" json:"title"`
+	Slug    string `gorm:"uniqueIndex;size:256" json:"slug"`
+	Summary string `gorm:"size:512" json:"summary"`
+	Content string `gorm:"type:text" json:"content"`
+	// ContentFormat 正文存储格式：1=Markdown（历史），2=富文本 HTML。
+	// 旧行默认 1，保证历史 Markdown 文章沿用原渲染路径；编辑器写入的新文章传 2。
+	ContentFormat int8           `gorm:"column:content_format;type:tinyint;not null;default:1" json:"content_format"`
 	ContentHTML   string         `gorm:"-" json:"content_html"` // 由后端渲染并净化的安全 HTML，不入库
 	CoverImage    string         `gorm:"size:256" json:"cover_image"`
 	CategoryID    uint           `gorm:"index" json:"category_id"`
@@ -119,29 +132,35 @@ func (ArticleEnrich) TableName() string {
 
 // DTO 请求结构
 type CreateArticleRequest struct {
-	UserID       uint     `json:"user_id"`
-	Title        string   `json:"title" binding:"required"`
-	Content      string   `json:"content" binding:"required"`
-	Summary      string   `json:"summary"`
-	CoverImage   string   `json:"cover_image"`
-	CategoryID   uint     `json:"category_id"`
-	Tags         []string `json:"tags"`
-	IsFeatured   bool     `json:"is_featured"`
-	AllowComment bool     `json:"allow_comment"`
+	UserID  uint   `json:"user_id"`
+	Title   string `json:"title" binding:"required"`
+	Content string `json:"content" binding:"required"`
+	// ContentFormat 正文格式：1=Markdown（缺省，兼容旧客户端），2=富文本 HTML。
+	// 传 2 时后端会先用 util.SanitizeHTML 净化再入库，读取时再净化一次。
+	ContentFormat int8     `json:"content_format"`
+	Summary       string   `json:"summary"`
+	CoverImage    string   `json:"cover_image"`
+	CategoryID    uint     `json:"category_id"`
+	Tags          []string `json:"tags"`
+	IsFeatured    bool     `json:"is_featured"`
+	AllowComment  bool     `json:"allow_comment"`
 	// 是否立即发布：true=进入待审核(pending)，false/缺省=存为草稿(draft)
 	IsPublished bool `json:"is_published"`
 }
 
 type UpdateArticleRequest struct {
-	UserID       uint     `json:"user_id"`
-	Title        string   `json:"title"`
-	Content      string   `json:"content"`
-	Summary      string   `json:"summary"`
-	CoverImage   string   `json:"cover_image"`
-	CategoryID   uint     `json:"category_id"`
-	Tags         []string `json:"tags"`
-	IsFeatured   bool     `json:"is_featured"`
-	AllowComment bool     `json:"allow_comment"`
+	UserID  uint   `json:"user_id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// ContentFormat 正文格式：不传（0）表示保持原格式不变；
+	// 传 1=Markdown / 2=富文本 HTML 则随本次更新一并变更。
+	ContentFormat int8     `json:"content_format"`
+	Summary       string   `json:"summary"`
+	CoverImage    string   `json:"cover_image"`
+	CategoryID    uint     `json:"category_id"`
+	Tags          []string `json:"tags"`
+	IsFeatured    bool     `json:"is_featured"`
+	AllowComment  bool     `json:"allow_comment"`
 	// 是否立即发布/提交审核：true=转 pending，false=仅保存草稿态
 	IsPublished bool `json:"is_published"`
 }

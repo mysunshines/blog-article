@@ -13,6 +13,7 @@ import (
 
 	"github.com/mysunshines/blog-article/internal/client"
 	v1 "github.com/mysunshines/blog-article/internal/handler/v1"
+	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/service"
 	decoratorv0pb "github.com/mysunshines/blog-article/proto/decorator/v0/pb"
@@ -76,6 +77,12 @@ func initInfra(cfg *goconfig.Config) (*gorm.DB, error) {
 	}
 	db := database.GetDB()
 
+	// 幂等补齐 articles.content_format 列：历史库由外部管理结构、没有该列，
+	// 富文本改造需要它区分「Markdown 旧文」与「HTML 新文」。缺省 1（Markdown）。
+	if err := ensureContentFormatColumn(db); err != nil {
+		return nil, fmt.Errorf("failed to ensure articles.content_format column: %v", err)
+	}
+
 	// 初始化 Redis 缓存（失败降级，不致命）
 	redisCfg := cfg.Redis
 	redisCfg.KeyPrefix = constants.RedisKeyPrefixArticle
@@ -84,6 +91,22 @@ func initInfra(cfg *goconfig.Config) (*gorm.DB, error) {
 	}
 
 	return db, nil
+}
+
+// ensureContentFormatColumn 幂等确保 articles 表存在 content_format 列。
+//
+// 本服务的表结构由外部管理（未接入迁移框架），而富文本改造需要该列来区分
+// 「历史 Markdown 文章」与「编辑器产出的 HTML 文章」。这里采用"存在即跳过"，
+// 保证重复启动安全，且不会触碰任何既有列或索引。
+func ensureContentFormatColumn(db *gorm.DB) error {
+	if db.Migrator().HasColumn(&model.Article{}, "content_format") {
+		return nil
+	}
+	if err := db.Migrator().AddColumn(&model.Article{}, "ContentFormat"); err != nil {
+		return err
+	}
+	log.Info("articles.content_format column added (default 1 = markdown)")
+	return nil
 }
 
 // NewServer 仅做依赖装配（限流器/JWT/熔断器/仓储/服务/处理器），不做任何 I/O。

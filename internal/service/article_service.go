@@ -92,6 +92,27 @@ func NewArticleService(repo repository.ArticleRepository, db *gorm.DB) ArticleSe
 	return s
 }
 
+// normalizeContentFormat 规范化正文格式入参：仅接受 1(Markdown) / 2(HTML)，
+// 其余（含缺省 0）一律视为 Markdown，避免客户端传入非法值导致读取走错渲染分支。
+func normalizeContentFormat(v int8) int8 {
+	if v == model.ContentFormatHTML {
+		return model.ContentFormatHTML
+	}
+	return model.ContentFormatMarkdown
+}
+
+// renderContent 按存储格式把正文转为可安全展示的 HTML：
+//   - Markdown（历史文章）：RenderMarkdown（先整体转义再渲染）
+//   - HTML（富文本编辑器产出）：SanitizeHTML（白名单净化）
+//
+// 出库时统一再处理一次，即使库中存在历史脏数据，前端渲染也不会执行脚本。
+func renderContent(content string, format int8) string {
+	if format == model.ContentFormatHTML {
+		return util.SanitizeHTML(content)
+	}
+	return util.RenderMarkdown(content)
+}
+
 func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArticleRequest) (*model.Article, error) {
 	// 参数校验
 	if req.Title == "" {
@@ -113,18 +134,27 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 		status = model.ArticleStatusDraft
 	}
 
+	// 正文按存储格式净化：富文本 HTML 先经白名单净化再入库，
+	// Markdown 原文入库（展示时再渲染）。入库即净化可避免脏数据落库。
+	fmtID := normalizeContentFormat(req.ContentFormat)
+	content := req.Content
+	if fmtID == model.ContentFormatHTML {
+		content = util.SanitizeHTML(content)
+	}
+
 	// 构建文章模型
 	article := &model.Article{
-		UserID:       req.UserID,
-		Title:        req.Title,
-		Slug:         slug,
-		Summary:      req.Summary,
-		Content:      req.Content,
-		CoverImage:   req.CoverImage,
-		CategoryID:   req.CategoryID,
-		Status:       status,
-		IsFeatured:   req.IsFeatured,
-		AllowComment: req.AllowComment,
+		UserID:        req.UserID,
+		Title:         req.Title,
+		Slug:          slug,
+		Summary:       req.Summary,
+		Content:       content,
+		ContentFormat: fmtID,
+		CoverImage:    req.CoverImage,
+		CategoryID:    req.CategoryID,
+		Status:        status,
+		IsFeatured:    req.IsFeatured,
+		AllowComment:  req.AllowComment,
 	}
 
 	// 创建文章
@@ -165,7 +195,7 @@ func (s *articleService) GetArticle(ctx context.Context, id uint) (*model.Articl
 	}
 	article := result.(*model.Article)
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
-	article.ContentHTML = util.RenderMarkdown(article.Content)
+	article.ContentHTML = renderContent(article.Content, article.ContentFormat)
 	return article, nil
 }
 
@@ -184,7 +214,7 @@ func (s *articleService) GetArticleForAdmin(ctx context.Context, id uint) (*mode
 	}
 
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
-	article.ContentHTML = util.RenderMarkdown(article.Content)
+	article.ContentHTML = renderContent(article.Content, article.ContentFormat)
 	return article, nil
 }
 
@@ -221,7 +251,7 @@ func (s *articleService) GetArticleBySlug(ctx context.Context, slug string) (*mo
 	}
 	article := result.(*model.Article)
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
-	article.ContentHTML = util.RenderMarkdown(article.Content)
+	article.ContentHTML = renderContent(article.Content, article.ContentFormat)
 	return article, nil
 }
 
@@ -244,6 +274,14 @@ func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.
 	}
 	if req.Content != "" {
 		article.Content = req.Content
+		// 格式：显式传入则按新格式更新并净化；不传（0）保持该文章原有格式，
+		// 使旧 Markdown 文章在不带格式的编辑请求下不会被误判为 HTML。
+		if req.ContentFormat != 0 {
+			article.ContentFormat = normalizeContentFormat(req.ContentFormat)
+		}
+		if article.ContentFormat == model.ContentFormatHTML {
+			article.Content = util.SanitizeHTML(article.Content)
+		}
 	}
 	if req.Summary != "" {
 		article.Summary = req.Summary
@@ -824,6 +862,13 @@ func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *m
 	}
 	if req.Content != "" {
 		article.Content = req.Content
+		// 与作者编辑一致：显式传入格式才变更，缺省保持原文格式。
+		if req.ContentFormat != 0 {
+			article.ContentFormat = normalizeContentFormat(req.ContentFormat)
+		}
+		if article.ContentFormat == model.ContentFormatHTML {
+			article.Content = util.SanitizeHTML(article.Content)
+		}
 	}
 	if req.Summary != "" {
 		article.Summary = req.Summary
