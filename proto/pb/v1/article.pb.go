@@ -122,6 +122,9 @@ type Article struct {
 	UpdatedAt     string   `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	PublishedAt   string   `protobuf:"bytes,20,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
 	Status        string   `protobuf:"bytes,21,opt,name=status,proto3" json:"status,omitempty"` // 文章状态: draft/pending/published/offline/rejected
+	// 后端渲染并净化后的安全 HTML（含行内批注高亮标记 <mark data-comment-id>），
+	// 由 article-service 在返回详情时组装；前端优先使用此字段渲染正文，杜绝 XSS。
+	ContentHtml   string `protobuf:"bytes,22,opt,name=content_html,json=contentHtml,proto3" json:"content_html,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -299,6 +302,13 @@ func (x *Article) GetPublishedAt() string {
 func (x *Article) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *Article) GetContentHtml() string {
+	if x != nil {
+		return x.ContentHtml
 	}
 	return ""
 }
@@ -3601,7 +3611,7 @@ var File_article_proto protoreflect.FileDescriptor
 const file_article_proto_rawDesc = "" +
 	"\n" +
 	"\rarticle.proto\x12\n" +
-	"article.v1\"\xf0\x04\n" +
+	"article.v1\"\x93\x05\n" +
 	"\aArticle\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\rR\x06userId\x12\x1a\n" +
@@ -3631,7 +3641,8 @@ const file_article_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x13 \x01(\tR\tupdatedAt\x12!\n" +
 	"\fpublished_at\x18\x14 \x01(\tR\vpublishedAt\x12\x16\n" +
-	"\x06status\x18\x15 \x01(\tR\x06status\"\xd9\x01\n" +
+	"\x06status\x18\x15 \x01(\tR\x06status\x12!\n" +
+	"\fcontent_html\x18\x16 \x01(\tR\vcontentHtml\"\xd9\x01\n" +
 	"\bCategory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +

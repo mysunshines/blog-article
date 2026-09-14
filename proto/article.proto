@@ -102,6 +102,9 @@ message Article {
     string updated_at = 19;
     string published_at = 20;
     string status = 21; // 文章状态: draft/pending/published/offline/rejected
+    // 后端渲染并净化后的安全 HTML（含行内批注高亮标记 <mark data-comment-id>），
+    // 由 article-service 在返回详情时组装；前端优先使用此字段渲染正文，杜绝 XSS。
+    string content_html = 22;
 }
 
 message Category {

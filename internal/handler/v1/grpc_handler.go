@@ -377,5 +377,6 @@ func ConvertToProtoArticle(a *model.Article) *article.Article {
 		UpdatedAt:    util.FormatTime(a.UpdatedAt),
 		PublishedAt:  publishedAt,
 		Status:       a.Status,
+		ContentHtml:  a.ContentHTML,
 	}
 }
