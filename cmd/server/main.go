@@ -507,6 +507,18 @@ func initRanking(ctx context.Context, svc service.ArticleService) {
 	}, func(ctx context.Context) error {
 		return svc.BackfillRanking(ctx)
 	})
+
+	// 周排名结算：取「上周浏览周榜」前 10 名，给对应文章作者发放积分。
+	// 分值不在本服务写死，而是上报 weekly_rank 事件由积分规则决定；
+	// 积分侧规则配置 weekly 限次，保证重复执行不会重复发放。
+	go periodic.Run(ctx, periodic.Options{
+		Name:           "ranking:weekly-reward",
+		Interval:       6 * time.Hour,
+		Timeout:        120 * time.Second,
+		RunImmediately: true,
+	}, func(ctx context.Context) error {
+		return svc.RewardWeeklyTopArticles(ctx)
+	})
 }
 
 // registerArticleBoards 注册文章维度榜单配置（幂等，可安全重复调用）。
@@ -516,6 +528,10 @@ func registerArticleBoards() error {
 	for i := 0; i < 5; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		err := client.RegisterArticleBoards(ctx)
+		if err == nil {
+			// 周榜 key 随周变化，周期重注册可把「新的一周」的周榜配置补上（幂等）
+			err = client.RegisterWeeklyBoards(ctx)
+		}
 		cancel()
 		if err == nil {
 			return nil

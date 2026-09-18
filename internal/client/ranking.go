@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	v0pb "github.com/mysunshines/blog-ranking/proto/pb/v0"
 	pb "github.com/mysunshines/blog-ranking/proto/pb/v1"
@@ -98,4 +100,74 @@ func IncrScore(ctx context.Context, board, member string, delta float64) error {
 // SetScore 便捷封装：对 member 在 board 上设置绝对值 score（ZADD）。
 func SetScore(ctx context.Context, board, member string, score float64) error {
 	return RecordScore(ctx, board, member, pb.ScoreOp_SCORE_OP_SET, 0, score)
+}
+
+// ============================================================================
+// 周期榜（周榜，二期）
+// ----------------------------------------------------------------------------
+// 周榜 = 总榜 key + ":weekly:" + ISO 周标识（如 board:article:views:weekly:2026-W38）。
+// 每周一个独立榜单：推送分数时同时写「总榜 + 当前周榜」，周榜天然只累积本周增量，
+// 不需要额外对账即可表达「本周排名」，历史周榜保留可回溯。
+// ============================================================================
+
+// WeekKey 生成 ISO 周标识（如 2026-W38）
+func WeekKey(t time.Time) string {
+	year, week := t.ISOWeek()
+	return fmt.Sprintf("%d-W%02d", year, week)
+}
+
+// CurrentWeekKey 当前周标识
+func CurrentWeekKey() string { return WeekKey(time.Now()) }
+
+// PreviousWeekKey 上一个完整周的标识（当前时刻往前推 7 天）
+func PreviousWeekKey() string { return WeekKey(time.Now().AddDate(0, 0, -7)) }
+
+// WeeklyBoard 周榜 key
+func WeeklyBoard(board, weekKey string) string { return board + ":weekly:" + weekKey }
+
+// IncrScoreWeekly 把增量同时写入「总榜 + 当前周榜」（周榜失败不影响总榜）
+func IncrScoreWeekly(ctx context.Context, board, member string, delta float64) error {
+	if err := IncrScore(ctx, board, member, delta); err != nil {
+		return err
+	}
+	if err := IncrScore(ctx, WeeklyBoard(board, CurrentWeekKey()), member, delta); err != nil {
+		log.Printf("[ranking] weekly board incr failed board=%s member=%s: %v", board, member, err)
+	}
+	return nil
+}
+
+// RegisterWeeklyBoards 注册当前周的周榜（随周切换重新注册）
+func RegisterWeeklyBoards(ctx context.Context) error {
+	wk := CurrentWeekKey()
+	cfg := &pb.BoardConfig{
+		Board:            WeeklyBoard(BoardArticleViews, wk),
+		DecoratorType:    "remote",
+		DecoratorService: "article-service",
+		LinkTemplate:     "/article/{member}",
+		CacheTtlSec:      60,
+	}
+	var resp pb.RegisterBoardResponse
+	if err := grpcclient.SendRequest(ctx, v0pb.RankingService_RegisterBoard_FullMethodName,
+		&pb.RegisterBoardRequest{Config: cfg}, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("register weekly board %s failed: code=%d message=%s", cfg.Board, resp.Code, resp.Message)
+	}
+	return nil
+}
+
+// GetTopMembers 取榜单前 N 名（周排名结算用）
+func GetTopMembers(ctx context.Context, board string, limit int32) ([]*pb.RankItem, error) {
+	var resp pb.GetRankingResponse
+	if err := grpcclient.SendRequest(ctx, pb.RankingService_GetRanking_FullMethodName, &pb.GetRankingRequest{
+		Board: board,
+		Limit: limit,
+	}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("get ranking failed: board=%s code=%d message=%s", board, resp.Code, resp.Message)
+	}
+	return resp.Items, nil
 }

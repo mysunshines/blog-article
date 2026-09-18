@@ -36,6 +36,12 @@ type Article struct {
 	// 旧行默认 1，保证历史 Markdown 文章沿用原渲染路径；编辑器写入的新文章传 2。
 	ContentFormat int8           `gorm:"column:content_format;type:tinyint;not null;default:1" json:"content_format"`
 	ContentHTML   string         `gorm:"-" json:"content_html"` // 由后端渲染并净化的安全 HTML，不入库
+	// 付费阅读（二期）：IsPaid=true 时需支付 Price 积分才能阅读正文。
+	// 未购买且非作者时，详情接口只返回摘要，Content/ContentHTML 留空。
+	IsPaid bool  `gorm:"column:is_paid;not null;default:false" json:"is_paid"`
+	Price  int64 `gorm:"column:price;not null;default:0" json:"price"` // 阅读所需积分（0=免费）
+	// 文章背景（三期）：0 表示使用默认背景
+	BackgroundID uint `gorm:"column:background_id;not null;default:0" json:"background_id"`
 	CoverImage    string         `gorm:"size:256" json:"cover_image"`
 	CategoryID    uint           `gorm:"index" json:"category_id"`
 	ViewCount     int            `gorm:"default:0" json:"view_count"`
@@ -146,6 +152,8 @@ type CreateArticleRequest struct {
 	AllowComment  bool     `json:"allow_comment"`
 	// 是否立即发布：true=进入待审核(pending)，false/缺省=存为草稿(draft)
 	IsPublished bool `json:"is_published"`
+	// BackgroundID 文章背景（三期）：0=默认背景；>0 表示选用已拥有的背景
+	BackgroundID uint `json:"background_id"`
 }
 
 type UpdateArticleRequest struct {
@@ -163,6 +171,8 @@ type UpdateArticleRequest struct {
 	AllowComment  bool     `json:"allow_comment"`
 	// 是否立即发布/提交审核：true=转 pending，false=仅保存草稿态
 	IsPublished bool `json:"is_published"`
+	// BackgroundID 文章背景（三期）：0=默认背景；>0 表示选用已拥有的背景
+	BackgroundID uint `json:"background_id"`
 }
 
 type ListArticlesRequest struct {

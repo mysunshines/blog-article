@@ -19,32 +19,38 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ArticleService_CreateArticle_FullMethodName        = "/article.v1.ArticleService/CreateArticle"
-	ArticleService_GetArticle_FullMethodName           = "/article.v1.ArticleService/GetArticle"
-	ArticleService_UpdateArticle_FullMethodName        = "/article.v1.ArticleService/UpdateArticle"
-	ArticleService_DeleteArticle_FullMethodName        = "/article.v1.ArticleService/DeleteArticle"
-	ArticleService_ListArticles_FullMethodName         = "/article.v1.ArticleService/ListArticles"
-	ArticleService_GetArticleBySlug_FullMethodName     = "/article.v1.ArticleService/GetArticleBySlug"
-	ArticleService_IncrementViewCount_FullMethodName   = "/article.v1.ArticleService/IncrementViewCount"
-	ArticleService_LikeArticle_FullMethodName          = "/article.v1.ArticleService/LikeArticle"
-	ArticleService_CancelLikeArticle_FullMethodName    = "/article.v1.ArticleService/CancelLikeArticle"
-	ArticleService_GetLikeStatus_FullMethodName        = "/article.v1.ArticleService/GetLikeStatus"
-	ArticleService_SearchArticles_FullMethodName       = "/article.v1.ArticleService/SearchArticles"
-	ArticleService_GetUserArticles_FullMethodName      = "/article.v1.ArticleService/GetUserArticles"
-	ArticleService_GetCategories_FullMethodName        = "/article.v1.ArticleService/GetCategories"
-	ArticleService_GetTags_FullMethodName              = "/article.v1.ArticleService/GetTags"
-	ArticleService_ListArticlesForAdmin_FullMethodName = "/article.v1.ArticleService/ListArticlesForAdmin"
-	ArticleService_GetArticleForAdmin_FullMethodName   = "/article.v1.ArticleService/GetArticleForAdmin"
-	ArticleService_ApproveArticle_FullMethodName       = "/article.v1.ArticleService/ApproveArticle"
-	ArticleService_RejectArticle_FullMethodName        = "/article.v1.ArticleService/RejectArticle"
-	ArticleService_OfflineArticle_FullMethodName       = "/article.v1.ArticleService/OfflineArticle"
-	ArticleService_PublishArticle_FullMethodName       = "/article.v1.ArticleService/PublishArticle"
-	ArticleService_SubmitArticle_FullMethodName        = "/article.v1.ArticleService/SubmitArticle"
-	ArticleService_AdminUpdateArticle_FullMethodName   = "/article.v1.ArticleService/AdminUpdateArticle"
-	ArticleService_AdminDeleteArticle_FullMethodName   = "/article.v1.ArticleService/AdminDeleteArticle"
-	ArticleService_CreateCategory_FullMethodName       = "/article.v1.ArticleService/CreateCategory"
-	ArticleService_UpdateCategory_FullMethodName       = "/article.v1.ArticleService/UpdateCategory"
-	ArticleService_DeleteCategory_FullMethodName       = "/article.v1.ArticleService/DeleteCategory"
+	ArticleService_CreateArticle_FullMethodName         = "/article.v1.ArticleService/CreateArticle"
+	ArticleService_GetArticle_FullMethodName            = "/article.v1.ArticleService/GetArticle"
+	ArticleService_UpdateArticle_FullMethodName         = "/article.v1.ArticleService/UpdateArticle"
+	ArticleService_DeleteArticle_FullMethodName         = "/article.v1.ArticleService/DeleteArticle"
+	ArticleService_ListArticles_FullMethodName          = "/article.v1.ArticleService/ListArticles"
+	ArticleService_GetArticleBySlug_FullMethodName      = "/article.v1.ArticleService/GetArticleBySlug"
+	ArticleService_PurchaseArticle_FullMethodName       = "/article.v1.ArticleService/PurchaseArticle"
+	ArticleService_ListBackgrounds_FullMethodName       = "/article.v1.ArticleService/ListBackgrounds"
+	ArticleService_BuyBackground_FullMethodName         = "/article.v1.ArticleService/BuyBackground"
+	ArticleService_IncrementViewCount_FullMethodName    = "/article.v1.ArticleService/IncrementViewCount"
+	ArticleService_LikeArticle_FullMethodName           = "/article.v1.ArticleService/LikeArticle"
+	ArticleService_CancelLikeArticle_FullMethodName     = "/article.v1.ArticleService/CancelLikeArticle"
+	ArticleService_GetLikeStatus_FullMethodName         = "/article.v1.ArticleService/GetLikeStatus"
+	ArticleService_SearchArticles_FullMethodName        = "/article.v1.ArticleService/SearchArticles"
+	ArticleService_GetUserArticles_FullMethodName       = "/article.v1.ArticleService/GetUserArticles"
+	ArticleService_GetCategories_FullMethodName         = "/article.v1.ArticleService/GetCategories"
+	ArticleService_GetTags_FullMethodName               = "/article.v1.ArticleService/GetTags"
+	ArticleService_ListArticlesForAdmin_FullMethodName  = "/article.v1.ArticleService/ListArticlesForAdmin"
+	ArticleService_GetArticleForAdmin_FullMethodName    = "/article.v1.ArticleService/GetArticleForAdmin"
+	ArticleService_ApproveArticle_FullMethodName        = "/article.v1.ArticleService/ApproveArticle"
+	ArticleService_RejectArticle_FullMethodName         = "/article.v1.ArticleService/RejectArticle"
+	ArticleService_OfflineArticle_FullMethodName        = "/article.v1.ArticleService/OfflineArticle"
+	ArticleService_PublishArticle_FullMethodName        = "/article.v1.ArticleService/PublishArticle"
+	ArticleService_SubmitArticle_FullMethodName         = "/article.v1.ArticleService/SubmitArticle"
+	ArticleService_AdminUpdateArticle_FullMethodName    = "/article.v1.ArticleService/AdminUpdateArticle"
+	ArticleService_AdminDeleteArticle_FullMethodName    = "/article.v1.ArticleService/AdminDeleteArticle"
+	ArticleService_AdminCreateBackground_FullMethodName = "/article.v1.ArticleService/AdminCreateBackground"
+	ArticleService_AdminUpdateBackground_FullMethodName = "/article.v1.ArticleService/AdminUpdateBackground"
+	ArticleService_AdminDeleteBackground_FullMethodName = "/article.v1.ArticleService/AdminDeleteBackground"
+	ArticleService_CreateCategory_FullMethodName        = "/article.v1.ArticleService/CreateCategory"
+	ArticleService_UpdateCategory_FullMethodName        = "/article.v1.ArticleService/UpdateCategory"
+	ArticleService_DeleteCategory_FullMethodName        = "/article.v1.ArticleService/DeleteCategory"
 )
 
 // ArticleServiceClient is the client API for ArticleService service.
@@ -58,6 +64,11 @@ type ArticleServiceClient interface {
 	DeleteArticle(ctx context.Context, in *DeleteArticleRequest, opts ...grpc.CallOption) (*DeleteArticleResponse, error)
 	ListArticles(ctx context.Context, in *ListArticlesRequest, opts ...grpc.CallOption) (*ListArticlesResponse, error)
 	GetArticleBySlug(ctx context.Context, in *GetArticleBySlugRequest, opts ...grpc.CallOption) (*GetArticleBySlugResponse, error)
+	// 付费阅读（二期）：支付积分解锁文章正文，作者获得积分收益
+	PurchaseArticle(ctx context.Context, in *PurchaseArticleRequest, opts ...grpc.CallOption) (*PurchaseArticleResponse, error)
+	// 文章背景（三期）：列表（含「是否已拥有」）与积分购买
+	ListBackgrounds(ctx context.Context, in *ListBackgroundsRequest, opts ...grpc.CallOption) (*ListBackgroundsResponse, error)
+	BuyBackground(ctx context.Context, in *BuyBackgroundRequest, opts ...grpc.CallOption) (*BuyBackgroundResponse, error)
 	IncrementViewCount(ctx context.Context, in *IncrementViewCountRequest, opts ...grpc.CallOption) (*IncrementViewCountResponse, error)
 	LikeArticle(ctx context.Context, in *LikeArticleRequest, opts ...grpc.CallOption) (*LikeArticleResponse, error)
 	CancelLikeArticle(ctx context.Context, in *CancelLikeArticleRequest, opts ...grpc.CallOption) (*CancelLikeArticleResponse, error)
@@ -76,6 +87,10 @@ type ArticleServiceClient interface {
 	SubmitArticle(ctx context.Context, in *SubmitArticleRequest, opts ...grpc.CallOption) (*SubmitArticleResponse, error)
 	AdminUpdateArticle(ctx context.Context, in *AdminUpdateArticleRequest, opts ...grpc.CallOption) (*AdminUpdateArticleResponse, error)
 	AdminDeleteArticle(ctx context.Context, in *AdminDeleteArticleRequest, opts ...grpc.CallOption) (*AdminDeleteArticleResponse, error)
+	// 文章背景管理（三期）
+	AdminCreateBackground(ctx context.Context, in *AdminCreateBackgroundRequest, opts ...grpc.CallOption) (*AdminCreateBackgroundResponse, error)
+	AdminUpdateBackground(ctx context.Context, in *AdminUpdateBackgroundRequest, opts ...grpc.CallOption) (*AdminUpdateBackgroundResponse, error)
+	AdminDeleteBackground(ctx context.Context, in *AdminDeleteBackgroundRequest, opts ...grpc.CallOption) (*AdminDeleteBackgroundResponse, error)
 	// --------------------------- 分类管理（管理员，需 RequireGRPCAdmin） ---------------------------
 	CreateCategory(ctx context.Context, in *CreateCategoryRequest, opts ...grpc.CallOption) (*CreateCategoryResponse, error)
 	UpdateCategory(ctx context.Context, in *UpdateCategoryRequest, opts ...grpc.CallOption) (*UpdateCategoryResponse, error)
@@ -144,6 +159,36 @@ func (c *articleServiceClient) GetArticleBySlug(ctx context.Context, in *GetArti
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetArticleBySlugResponse)
 	err := c.cc.Invoke(ctx, ArticleService_GetArticleBySlug_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) PurchaseArticle(ctx context.Context, in *PurchaseArticleRequest, opts ...grpc.CallOption) (*PurchaseArticleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PurchaseArticleResponse)
+	err := c.cc.Invoke(ctx, ArticleService_PurchaseArticle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) ListBackgrounds(ctx context.Context, in *ListBackgroundsRequest, opts ...grpc.CallOption) (*ListBackgroundsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBackgroundsResponse)
+	err := c.cc.Invoke(ctx, ArticleService_ListBackgrounds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) BuyBackground(ctx context.Context, in *BuyBackgroundRequest, opts ...grpc.CallOption) (*BuyBackgroundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BuyBackgroundResponse)
+	err := c.cc.Invoke(ctx, ArticleService_BuyBackground_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +365,36 @@ func (c *articleServiceClient) AdminDeleteArticle(ctx context.Context, in *Admin
 	return out, nil
 }
 
+func (c *articleServiceClient) AdminCreateBackground(ctx context.Context, in *AdminCreateBackgroundRequest, opts ...grpc.CallOption) (*AdminCreateBackgroundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminCreateBackgroundResponse)
+	err := c.cc.Invoke(ctx, ArticleService_AdminCreateBackground_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) AdminUpdateBackground(ctx context.Context, in *AdminUpdateBackgroundRequest, opts ...grpc.CallOption) (*AdminUpdateBackgroundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminUpdateBackgroundResponse)
+	err := c.cc.Invoke(ctx, ArticleService_AdminUpdateBackground_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) AdminDeleteBackground(ctx context.Context, in *AdminDeleteBackgroundRequest, opts ...grpc.CallOption) (*AdminDeleteBackgroundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdminDeleteBackgroundResponse)
+	err := c.cc.Invoke(ctx, ArticleService_AdminDeleteBackground_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *articleServiceClient) CreateCategory(ctx context.Context, in *CreateCategoryRequest, opts ...grpc.CallOption) (*CreateCategoryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateCategoryResponse)
@@ -361,6 +436,11 @@ type ArticleServiceServer interface {
 	DeleteArticle(context.Context, *DeleteArticleRequest) (*DeleteArticleResponse, error)
 	ListArticles(context.Context, *ListArticlesRequest) (*ListArticlesResponse, error)
 	GetArticleBySlug(context.Context, *GetArticleBySlugRequest) (*GetArticleBySlugResponse, error)
+	// 付费阅读（二期）：支付积分解锁文章正文，作者获得积分收益
+	PurchaseArticle(context.Context, *PurchaseArticleRequest) (*PurchaseArticleResponse, error)
+	// 文章背景（三期）：列表（含「是否已拥有」）与积分购买
+	ListBackgrounds(context.Context, *ListBackgroundsRequest) (*ListBackgroundsResponse, error)
+	BuyBackground(context.Context, *BuyBackgroundRequest) (*BuyBackgroundResponse, error)
 	IncrementViewCount(context.Context, *IncrementViewCountRequest) (*IncrementViewCountResponse, error)
 	LikeArticle(context.Context, *LikeArticleRequest) (*LikeArticleResponse, error)
 	CancelLikeArticle(context.Context, *CancelLikeArticleRequest) (*CancelLikeArticleResponse, error)
@@ -379,6 +459,10 @@ type ArticleServiceServer interface {
 	SubmitArticle(context.Context, *SubmitArticleRequest) (*SubmitArticleResponse, error)
 	AdminUpdateArticle(context.Context, *AdminUpdateArticleRequest) (*AdminUpdateArticleResponse, error)
 	AdminDeleteArticle(context.Context, *AdminDeleteArticleRequest) (*AdminDeleteArticleResponse, error)
+	// 文章背景管理（三期）
+	AdminCreateBackground(context.Context, *AdminCreateBackgroundRequest) (*AdminCreateBackgroundResponse, error)
+	AdminUpdateBackground(context.Context, *AdminUpdateBackgroundRequest) (*AdminUpdateBackgroundResponse, error)
+	AdminDeleteBackground(context.Context, *AdminDeleteBackgroundRequest) (*AdminDeleteBackgroundResponse, error)
 	// --------------------------- 分类管理（管理员，需 RequireGRPCAdmin） ---------------------------
 	CreateCategory(context.Context, *CreateCategoryRequest) (*CreateCategoryResponse, error)
 	UpdateCategory(context.Context, *UpdateCategoryRequest) (*UpdateCategoryResponse, error)
@@ -410,6 +494,15 @@ func (UnimplementedArticleServiceServer) ListArticles(context.Context, *ListArti
 }
 func (UnimplementedArticleServiceServer) GetArticleBySlug(context.Context, *GetArticleBySlugRequest) (*GetArticleBySlugResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetArticleBySlug not implemented")
+}
+func (UnimplementedArticleServiceServer) PurchaseArticle(context.Context, *PurchaseArticleRequest) (*PurchaseArticleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PurchaseArticle not implemented")
+}
+func (UnimplementedArticleServiceServer) ListBackgrounds(context.Context, *ListBackgroundsRequest) (*ListBackgroundsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBackgrounds not implemented")
+}
+func (UnimplementedArticleServiceServer) BuyBackground(context.Context, *BuyBackgroundRequest) (*BuyBackgroundResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BuyBackground not implemented")
 }
 func (UnimplementedArticleServiceServer) IncrementViewCount(context.Context, *IncrementViewCountRequest) (*IncrementViewCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IncrementViewCount not implemented")
@@ -461,6 +554,15 @@ func (UnimplementedArticleServiceServer) AdminUpdateArticle(context.Context, *Ad
 }
 func (UnimplementedArticleServiceServer) AdminDeleteArticle(context.Context, *AdminDeleteArticleRequest) (*AdminDeleteArticleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AdminDeleteArticle not implemented")
+}
+func (UnimplementedArticleServiceServer) AdminCreateBackground(context.Context, *AdminCreateBackgroundRequest) (*AdminCreateBackgroundResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdminCreateBackground not implemented")
+}
+func (UnimplementedArticleServiceServer) AdminUpdateBackground(context.Context, *AdminUpdateBackgroundRequest) (*AdminUpdateBackgroundResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdminUpdateBackground not implemented")
+}
+func (UnimplementedArticleServiceServer) AdminDeleteBackground(context.Context, *AdminDeleteBackgroundRequest) (*AdminDeleteBackgroundResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdminDeleteBackground not implemented")
 }
 func (UnimplementedArticleServiceServer) CreateCategory(context.Context, *CreateCategoryRequest) (*CreateCategoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateCategory not implemented")
@@ -596,6 +698,60 @@ func _ArticleService_GetArticleBySlug_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ArticleServiceServer).GetArticleBySlug(ctx, req.(*GetArticleBySlugRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_PurchaseArticle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PurchaseArticleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).PurchaseArticle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_PurchaseArticle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).PurchaseArticle(ctx, req.(*PurchaseArticleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_ListBackgrounds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBackgroundsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).ListBackgrounds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_ListBackgrounds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).ListBackgrounds(ctx, req.(*ListBackgroundsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_BuyBackground_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BuyBackgroundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).BuyBackground(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_BuyBackground_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).BuyBackground(ctx, req.(*BuyBackgroundRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -906,6 +1062,60 @@ func _ArticleService_AdminDeleteArticle_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArticleService_AdminCreateBackground_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminCreateBackgroundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).AdminCreateBackground(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_AdminCreateBackground_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).AdminCreateBackground(ctx, req.(*AdminCreateBackgroundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_AdminUpdateBackground_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminUpdateBackgroundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).AdminUpdateBackground(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_AdminUpdateBackground_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).AdminUpdateBackground(ctx, req.(*AdminUpdateBackgroundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_AdminDeleteBackground_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdminDeleteBackgroundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).AdminDeleteBackground(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_AdminDeleteBackground_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).AdminDeleteBackground(ctx, req.(*AdminDeleteBackgroundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ArticleService_CreateCategory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateCategoryRequest)
 	if err := dec(in); err != nil {
@@ -992,6 +1202,18 @@ var ArticleService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ArticleService_GetArticleBySlug_Handler,
 		},
 		{
+			MethodName: "PurchaseArticle",
+			Handler:    _ArticleService_PurchaseArticle_Handler,
+		},
+		{
+			MethodName: "ListBackgrounds",
+			Handler:    _ArticleService_ListBackgrounds_Handler,
+		},
+		{
+			MethodName: "BuyBackground",
+			Handler:    _ArticleService_BuyBackground_Handler,
+		},
+		{
 			MethodName: "IncrementViewCount",
 			Handler:    _ArticleService_IncrementViewCount_Handler,
 		},
@@ -1058,6 +1280,18 @@ var ArticleService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AdminDeleteArticle",
 			Handler:    _ArticleService_AdminDeleteArticle_Handler,
+		},
+		{
+			MethodName: "AdminCreateBackground",
+			Handler:    _ArticleService_AdminCreateBackground_Handler,
+		},
+		{
+			MethodName: "AdminUpdateBackground",
+			Handler:    _ArticleService_AdminUpdateBackground_Handler,
+		},
+		{
+			MethodName: "AdminDeleteBackground",
+			Handler:    _ArticleService_AdminDeleteBackground_Handler,
 		},
 		{
 			MethodName: "CreateCategory",

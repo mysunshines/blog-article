@@ -41,6 +41,8 @@ type ArticleService interface {
 	GetArticle(ctx context.Context, id uint) (*model.Article, error)
 	GetArticleForAdmin(ctx context.Context, id uint) (*model.Article, error)
 	GetArticleBySlug(ctx context.Context, slug string) (*model.Article, error)
+	// PurchaseArticle 付费阅读：扣读者积分并给作者结算收益，返回解锁后的文章与读者剩余积分。
+	PurchaseArticle(ctx context.Context, articleID, userID uint) (*model.Article, int64, error)
 	UpdateArticle(ctx context.Context, id uint, req *model.UpdateArticleRequest) (*model.Article, error)
 	DeleteArticle(ctx context.Context, id, userID uint) error
 	ListArticles(ctx context.Context, req *model.ListArticlesRequest) ([]*model.Article, int64, error)
@@ -68,10 +70,26 @@ type ArticleService interface {
 
 	// BackfillRanking 历史回填四个榜单（浏览/点赞/评论/作者），best-effort。
 	BackfillRanking(ctx context.Context) error
+
+	// RewardWeeklyTopArticles 周排名结算：取上周周榜 top10 的文章作者发放积分。
+	// 分值不在本服务写死，而是上报 weekly_rank 事件，由积分服务的规则决定。
+	RewardWeeklyTopArticles(ctx context.Context) error
+
+	// ============ 文章背景（三期） ============
+	// ListBackgrounds 上架背景列表，owned 表示当前用户是否已拥有（免费恒为 true）。
+	ListBackgrounds(ctx context.Context, userID uint) ([]*model.ArticleBackground, []bool, error)
+	// BuyBackground 用积分购买背景，返回购买后剩余积分
+	BuyBackground(ctx context.Context, backgroundID, userID uint) (int64, error)
+
+	// 后台管理
+	AdminCreateBackground(ctx context.Context, req *model.CreateBackgroundRequest) (*model.ArticleBackground, error)
+	AdminUpdateBackground(ctx context.Context, req *model.UpdateBackgroundRequest) (*model.ArticleBackground, error)
+	AdminDeleteBackground(ctx context.Context, id uint) error
 }
 
 type articleService struct {
 	repo    repository.ArticleRepository
+	bgRepo  *repository.BackgroundRepository // 文章背景（三期）
 	db      *gorm.DB
 	sfGroup singleflight.Group // 高并发：请求合并
 
@@ -84,6 +102,7 @@ type articleService struct {
 func NewArticleService(repo repository.ArticleRepository, db *gorm.DB) ArticleService {
 	s := &articleService{
 		repo:        repo,
+		bgRepo:      repository.NewBackgroundRepository(db),
 		db:          db,
 		viewPending: make(map[uint]int64),
 	}
@@ -155,11 +174,20 @@ func (s *articleService) CreateArticle(ctx context.Context, req *model.CreateArt
 		Status:        status,
 		IsFeatured:    req.IsFeatured,
 		AllowComment:  req.AllowComment,
+		BackgroundID:  req.BackgroundID,
 	}
 
 	// 创建文章
 	if err := s.repo.Create(ctx, article); err != nil {
 		return nil, err
+	}
+
+	// 发布（含先发后审的 pending）→ 上报「发布文章」事件给积分服务。
+	// 分值不在此写死，由积分服务的规则决定（管理员可配）；best-effort，失败不影响创建结果。
+	if req.IsPublished {
+		if _, perr := client.EarnPoints(ctx, req.UserID, "publish_article", "{}", "article", article.ID); perr != nil {
+			log.Printf("[point] publish_article earn failed article=%d: %v", article.ID, perr)
+		}
 	}
 
 	// 重新获取完整文章信息
@@ -216,6 +244,48 @@ func (s *articleService) GetArticleForAdmin(ctx context.Context, id uint) (*mode
 	// 后端渲染并净化 Markdown，前端只负责展示，杜绝 XSS
 	article.ContentHTML = renderContent(article.Content, article.ContentFormat)
 	return article, nil
+}
+
+// PurchaseArticle 付费阅读：
+//  1. 读者支付积分（point-service 记录已购 + 流水，重复购买幂等）
+//  2. 作者获得收益——**分值不在此写死**，而是上报 article_purchased 事件，
+//     由积分服务的规则决定（管理员可配，如按价格比例）
+//  3. 返回解锁后的正文（ContentHTML）
+func (s *articleService) PurchaseArticle(ctx context.Context, articleID, userID uint) (*model.Article, int64, error) {
+	a, err := s.repo.GetByID(ctx, articleID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !a.IsPaid || a.Price <= 0 {
+		return nil, 0, fmt.Errorf("该文章无需付费")
+	}
+
+	// 作者本人：无需付费，直接给正文
+	if a.UserID == userID {
+		a.ContentHTML = renderContent(a.Content, a.ContentFormat)
+		return a, 0, nil
+	}
+
+	// 已购买过：不重复扣费，直接给正文
+	if ok, err := client.HasPurchased(ctx, userID, "article", a.ID); err == nil && ok {
+		a.ContentHTML = renderContent(a.Content, a.ContentFormat)
+		return a, 0, nil
+	}
+
+	// 扣读者积分
+	balance, err := client.SpendPoints(ctx, userID, a.Price, "article", a.ID, "购买文章《"+a.Title+"》")
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 作者收益上报（best-effort：失败只告警，不影响读者已获得的阅读权）
+	if _, err := client.EarnPoints(ctx, a.UserID, "article_purchased",
+		fmt.Sprintf(`{"price":%d,"article_id":%d}`, a.Price, a.ID), "article", a.ID); err != nil {
+		log.Printf("[point] author earn failed article=%d author=%d: %v", a.ID, a.UserID, err)
+	}
+
+	a.ContentHTML = renderContent(a.Content, a.ContentFormat)
+	return a, balance, nil
 }
 
 func (s *articleService) GetArticleBySlug(ctx context.Context, slug string) (*model.Article, error) {
@@ -294,6 +364,10 @@ func (s *articleService) UpdateArticle(ctx context.Context, id uint, req *model.
 	}
 	article.IsFeatured = req.IsFeatured
 	article.AllowComment = req.AllowComment
+	// 背景：仅当显式传入（>0）时变更，避免未传字段把已选背景清掉
+	if req.BackgroundID > 0 {
+		article.BackgroundID = req.BackgroundID
+	}
 	// 发布状态由状态机统一管理：
 	// - is_published=true  → 进入待审核(pending, 先发后审前台可见)，并清空历史拒绝/下线原因
 	// - is_published=false → 仅当原本是草稿(draft)时保持草稿；非草稿态(已发布/待审等)编辑内容不改变状态
@@ -449,12 +523,42 @@ func (s *articleService) flushViewCounts() {
 
 		// 推送浏览榜（best-effort，独立超时，不影响落库主流程）
 		pushCtx, pushCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if perr := client.IncrScore(pushCtx, client.BoardArticleViews,
+		if perr := client.IncrScoreWeekly(pushCtx, client.BoardArticleViews,
 			strconv.FormatUint(uint64(id), 10), float64(delta)); perr != nil {
 			log.Printf("[ranking] push view score failed article=%d: %v", id, perr)
 		}
 		pushCancel()
 	}
+}
+
+// RewardWeeklyTopArticles 周排名结算（二期）：
+// 取「上周浏览周榜」前 10 名，给对应文章的作者发放积分奖励。
+//
+// 分值不在本服务写死，而是上报 weekly_rank 事件，由积分服务的规则决定
+// （管理员可配，如「周榜前 10 名得 100 积分」）；规则侧配置 weekly 限次防重复发放。
+func (s *articleService) RewardWeeklyTopArticles(ctx context.Context) error {
+	week := client.PreviousWeekKey()
+	board := client.WeeklyBoard(client.BoardArticleViews, week)
+	items, err := client.GetTopMembers(ctx, board, 10)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		articleID, cerr := strconv.ParseUint(it.Member, 10, 64)
+		if cerr != nil || articleID == 0 {
+			continue
+		}
+		a, aerr := s.repo.GetByID(ctx, uint(articleID))
+		if aerr != nil || a == nil {
+			continue
+		}
+		// 把名次与周次放进事件上下文，供规则 condition 匹配（如 {"rank_lte":10}）
+		ctxJSON := fmt.Sprintf(`{"rank":%d,"week":"%s","board":"%s"}`, it.Rank, week, board)
+		if _, perr := client.EarnPoints(ctx, a.UserID, "weekly_rank", ctxJSON, "article", a.ID); perr != nil {
+			log.Printf("[point] weekly rank reward failed article=%d author=%d: %v", a.ID, a.UserID, perr)
+		}
+	}
+	return nil
 }
 
 // BackfillRanking 历史回填四个榜单（浏览/点赞/评论/作者），以 DB 当前值为权威快照，
@@ -536,7 +640,7 @@ func (s *articleService) LikeArticle(ctx context.Context, articleID, userID uint
 	}
 	// 新点赞 → 推送点赞榜 +1（best-effort，失败不影响主流程）
 	if !alreadyLiked {
-		if perr := client.IncrScore(ctx, client.BoardArticleLikes,
+		if perr := client.IncrScoreWeekly(ctx, client.BoardArticleLikes,
 			strconv.FormatUint(uint64(articleID), 10), 1); perr != nil {
 			log.Printf("[ranking] push like score failed article=%d: %v", articleID, perr)
 		}
@@ -549,7 +653,7 @@ func (s *articleService) CancelLikeArticle(ctx context.Context, articleID, userI
 	_, wasLiked, _ := s.repo.GetLikeStatus(ctx, articleID, userID)
 	count, liked, err := s.repo.CancelLikeArticle(ctx, articleID, userID)
 	if err == nil && wasLiked {
-		if perr := client.IncrScore(ctx, client.BoardArticleLikes,
+		if perr := client.IncrScoreWeekly(ctx, client.BoardArticleLikes,
 			strconv.FormatUint(uint64(articleID), 10), -1); perr != nil {
 			log.Printf("[ranking] push unlike score failed article=%d: %v", articleID, perr)
 		}
@@ -881,6 +985,10 @@ func (s *articleService) AdminUpdateArticle(ctx context.Context, id uint, req *m
 	}
 	article.IsFeatured = req.IsFeatured
 	article.AllowComment = req.AllowComment
+	// 背景：仅当显式传入（>0）时变更，避免未传字段把已选背景清掉
+	if req.BackgroundID > 0 {
+		article.BackgroundID = req.BackgroundID
+	}
 
 	if err := s.repo.Update(ctx, article); err != nil {
 		return nil, err

@@ -53,6 +53,12 @@ service ArticleService {
     rpc DeleteArticle(DeleteArticleRequest) returns (DeleteArticleResponse);
     rpc ListArticles(ListArticlesRequest) returns (ListArticlesResponse);
     rpc GetArticleBySlug(GetArticleBySlugRequest) returns (GetArticleBySlugResponse);
+    // 付费阅读（二期）：支付积分解锁文章正文，作者获得积分收益
+    rpc PurchaseArticle(PurchaseArticleRequest) returns (PurchaseArticleResponse);
+
+    // 文章背景（三期）：列表（含「是否已拥有」）与积分购买
+    rpc ListBackgrounds(ListBackgroundsRequest) returns (ListBackgroundsResponse);
+    rpc BuyBackground(BuyBackgroundRequest) returns (BuyBackgroundResponse);
     rpc IncrementViewCount(IncrementViewCountRequest) returns (IncrementViewCountResponse);
     rpc LikeArticle(LikeArticleRequest) returns (LikeArticleResponse);
     rpc CancelLikeArticle(CancelLikeArticleRequest) returns (CancelLikeArticleResponse);
@@ -72,6 +78,11 @@ service ArticleService {
     rpc SubmitArticle(SubmitArticleRequest) returns (SubmitArticleResponse);
     rpc AdminUpdateArticle(AdminUpdateArticleRequest) returns (AdminUpdateArticleResponse);
     rpc AdminDeleteArticle(AdminDeleteArticleRequest) returns (AdminDeleteArticleResponse);
+
+    // 文章背景管理（三期）
+    rpc AdminCreateBackground(AdminCreateBackgroundRequest) returns (AdminCreateBackgroundResponse);
+    rpc AdminUpdateBackground(AdminUpdateBackgroundRequest) returns (AdminUpdateBackgroundResponse);
+    rpc AdminDeleteBackground(AdminDeleteBackgroundRequest) returns (AdminDeleteBackgroundResponse);
 
     // --------------------------- 分类管理（管理员，需 RequireGRPCAdmin） ---------------------------
     rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
@@ -105,6 +116,11 @@ message Article {
     // 后端渲染并净化后的安全 HTML（含行内批注高亮标记 <mark data-comment-id>），
     // 由 article-service 在返回详情时组装；前端优先使用此字段渲染正文，杜绝 XSS。
     string content_html = 22;
+    // 付费阅读（二期）：is_paid=true 时需支付 price 积分才能阅读正文。
+    // 未购买（且非作者）时详情接口只返回摘要，正文与 content_html 留空。
+    bool is_paid = 23;
+    int64 price = 24;         // 阅读所需积分（0=免费）
+    uint32 background_id = 25; // 文章背景 ID（0=默认背景，三期）
 }
 
 message Category {
@@ -140,6 +156,7 @@ message CreateArticleRequest {
     bool allow_comment = 10;
     // true=立即发布(进入待审核 pending, 先发后审可见); false/缺省=存为草稿 draft(仅作者可见)
     bool is_published = 11;
+    uint32 background_id = 13;   // 文章背景（三期）：0=默认背景，>0 需已拥有该背景
 }
 
 message CreateArticleResponse {
@@ -173,6 +190,7 @@ message UpdateArticleRequest {
     bool allow_comment = 11;
     // true=保存并立即发布(转 pending); false=仅保存草稿(draft, 不改变已有的非草稿状态时保持原状由调用方决定)
     bool is_published = 12;
+    uint32 background_id = 14;   // 文章背景（三期）：0=默认背景，>0 需已拥有该背景
 }
 
 message UpdateArticleResponse {
@@ -214,6 +232,83 @@ message GetArticleBySlugResponse {
     uint32 code = 1;
     string message = 2;
     Article article = 3;
+}
+
+// 付费阅读：支付积分解锁文章正文（购买成功后作者获得积分收益）
+message PurchaseArticleRequest {
+    uint32 article_id = 1;
+}
+
+message PurchaseArticleResponse {
+    uint32 code = 1;
+    string message = 2;
+    int64 balance = 3;        // 支付后剩余积分
+    string content_html = 4;  // 解锁成功直接返回正文 HTML，省一次详情请求
+}
+
+// ===================== 文章背景（三期） =====================
+
+message Background {
+    uint32 id = 1;
+    string name = 2;
+    string image_url = 3;
+    string thumb_url = 4;
+    int64  price = 5;    // 0=免费，>0=需积分购买
+    uint32 status = 6;   // 1=上架 0=下架
+    int32  sort = 7;
+    bool   owned = 8;    // 当前用户是否已拥有（免费背景恒为 true，或已用积分购买）
+}
+
+message ListBackgroundsRequest {}
+message ListBackgroundsResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Background backgrounds = 3;
+}
+
+message BuyBackgroundRequest {
+    uint32 background_id = 1;
+}
+message BuyBackgroundResponse {
+    uint32 code = 1;
+    string message = 2;
+    int64 balance = 3;   // 购买后剩余积分
+}
+
+message AdminCreateBackgroundRequest {
+    string name = 1;
+    string image_url = 2;
+    string thumb_url = 3;
+    int64  price = 4;
+    int32  sort = 5;
+}
+message AdminCreateBackgroundResponse {
+    uint32 code = 1;
+    string message = 2;
+    Background background = 3;
+}
+
+message AdminUpdateBackgroundRequest {
+    uint32 background_id = 1;
+    string name = 2;
+    string image_url = 3;
+    string thumb_url = 4;
+    int64  price = 5;
+    uint32 status = 6;
+    int32  sort = 7;
+}
+message AdminUpdateBackgroundResponse {
+    uint32 code = 1;
+    string message = 2;
+    Background background = 3;
+}
+
+message AdminDeleteBackgroundRequest {
+    uint32 background_id = 1;
+}
+message AdminDeleteBackgroundResponse {
+    uint32 code = 1;
+    string message = 2;
 }
 
 message IncrementViewCountRequest {

@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 
+	"github.com/mysunshines/blog-article/internal/client"
 	"github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/service"
@@ -50,6 +51,7 @@ func (h *GrpcArticleHandler) CreateArticle(ctx context.Context, req *article.Cre
 		IsFeatured:    req.IsFeatured,
 		AllowComment:  req.AllowComment,
 		IsPublished:   req.IsPublished,
+		BackgroundID:  uint(req.GetBackgroundId()),
 	})
 
 	if err != nil {
@@ -74,6 +76,8 @@ func (h *GrpcArticleHandler) GetArticle(ctx context.Context, req *article.GetArt
 			Message: "Article not found",
 		}, nil
 	}
+	// 付费文章：未购买且非作者时只返回摘要（清空正文）
+	applyPaidAccess(ctx, foundArticle)
 
 	return &article.GetArticleResponse{
 		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
@@ -128,6 +132,7 @@ func (h *GrpcArticleHandler) UpdateArticle(ctx context.Context, req *article.Upd
 		IsFeatured:    req.IsFeatured,
 		AllowComment:  req.AllowComment,
 		IsPublished:   req.IsPublished,
+		BackgroundID:  uint(req.GetBackgroundId()),
 	})
 	if err != nil {
 		return &article.UpdateArticleResponse{
@@ -170,11 +175,58 @@ func (h *GrpcArticleHandler) GetArticleBySlug(ctx context.Context, req *article.
 			Message: "Article not found",
 		}, nil
 	}
+	// 付费文章：未购买且非作者时只返回摘要（清空正文）
+	applyPaidAccess(ctx, foundArticle)
 
 	return &article.GetArticleBySlugResponse{
 		Code:    uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
 		Message: "success",
 		Article: ConvertToProtoArticle(foundArticle),
+	}, nil
+}
+
+// applyPaidAccess 付费文章访问控制（付费墙的服务端兜底）。
+// 付费文章在「未购买且非作者」时清空正文与渲染结果，只保留摘要，
+// 前端据此展示「支付 X 积分解锁」。已购判定委托 point-service（共享已购记录），
+// 未登录用户一律视为未购买。
+//
+// 注意：服务端裁剪是关键防线——前端隐藏正文不可信，接口层必须不返回正文。
+func applyPaidAccess(ctx context.Context, a *model.Article) {
+	if a == nil || !a.IsPaid || a.Price <= 0 {
+		return
+	}
+	uid, _ := commonmiddleware.GetGRPCUserID(ctx)
+	if uid != 0 && uid == a.UserID {
+		return // 作者本人始终可读
+	}
+	if uid != 0 {
+		if ok, err := client.HasPurchased(ctx, uid, "article", a.ID); err == nil && ok {
+			return // 已购买
+		}
+	}
+	// 未授权：只保留摘要
+	a.Content = ""
+	a.ContentHTML = ""
+}
+
+// PurchaseArticle 付费阅读：支付积分解锁正文，作者获得积分收益
+func (h *GrpcArticleHandler) PurchaseArticle(ctx context.Context, req *article.PurchaseArticleRequest) (*article.PurchaseArticleResponse, error) {
+	uid, err := commonmiddleware.RequireGRPCAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a, balance, err := h.Svc.PurchaseArticle(ctx, uint(req.ArticleId), uid)
+	if err != nil {
+		return &article.PurchaseArticleResponse{
+			Code:    errCode(err),
+			Message: err.Error(),
+		}, nil
+	}
+	return &article.PurchaseArticleResponse{
+		Code:        uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:     "success",
+		Balance:     balance,
+		ContentHtml: a.ContentHTML,
 	}, nil
 }
 
@@ -378,5 +430,8 @@ func ConvertToProtoArticle(a *model.Article) *article.Article {
 		PublishedAt:  publishedAt,
 		Status:       a.Status,
 		ContentHtml:  a.ContentHTML,
+		IsPaid:       a.IsPaid,
+		Price:        a.Price,
+		BackgroundId: uint32(a.BackgroundID),
 	}
 }
