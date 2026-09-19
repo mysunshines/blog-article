@@ -285,6 +285,42 @@ func (h *GrpcArticleHandler) GetLikeStatus(ctx context.Context, req *article.Get
 	}, nil
 }
 
+// ListAuthorArticles 作者主页：按作者 user_id 列出其已发布文章。
+// 公开接口（无需登录），且只暴露 published——草稿/待审核/下线/拒绝均不返回，
+// 与 GetUserArticles（仅本人、含草稿）职责分离，避免越权与内容泄露。
+func (h *GrpcArticleHandler) ListAuthorArticles(ctx context.Context, req *article.ListAuthorArticlesRequest) (*article.ListAuthorArticlesResponse, error) {
+	if req.UserId == 0 {
+		return &article.ListAuthorArticlesResponse{
+			Code:    uint32(article.ArticleErrorCode_ARTICLE_LIST_FAILED),
+			Message: "user_id 不能为空",
+		}, nil
+	}
+	page := req.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	result, total, err := h.Svc.ListAuthorArticles(ctx, uint(req.UserId), uint(page), uint(pageSize))
+	if err != nil {
+		return &article.ListAuthorArticlesResponse{Code: errCode(err), Message: err.Error()}, nil
+	}
+
+	list := make([]*article.Article, len(result))
+	for i, a := range result {
+		list[i] = ConvertToProtoArticle(a)
+	}
+	return &article.ListAuthorArticlesResponse{
+		Code:     uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
+		Message:  "success",
+		Articles: list,
+		Total:    uint32(total),
+	}, nil
+}
+
 func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.SearchArticlesRequest) (*article.SearchArticlesResponse, error) {
 	result, total, err := h.Svc.SearchArticles(ctx, &model.SearchArticlesRequest{
 		Keyword: req.Keyword,

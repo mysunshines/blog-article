@@ -25,6 +25,8 @@ type ArticleRepository interface {
 	List(ctx context.Context, req *model.ListArticlesRequest) ([]*model.Article, int64, error)
 	Search(ctx context.Context, req *model.SearchArticlesRequest) ([]*model.Article, int64, error)
 	GetByUserID(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
+	// GetPublishedByUserID 作者主页用：只返回已发布文章（公开可见）
+	GetPublishedByUserID(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
 	IncrementViewCountBy(ctx context.Context, id uint, delta int64) error
 	GetViewCount(ctx context.Context, id uint) (int, error)
@@ -366,6 +368,38 @@ func (r *articleRepository) Search(ctx context.Context, req *model.SearchArticle
 	}
 
 	r.fillAuthors(articles)
+	return articles, total, nil
+}
+
+// GetPublishedByUserID 作者主页用：按作者列出「已发布」文章（公开可见）。
+// 与 GetByUserID（我的文章，含草稿等全部状态）区分，避免把未发布内容暴露给访客。
+func (r *articleRepository) GetPublishedByUserID(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error) {
+	var articles []*model.Article
+	var total int64
+
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 10
+	}
+	offset := (page - 1) * size
+
+	baseQuery := r.db.WithContext(ctx).Model(&model.Article{}).
+		Where("user_id = ? AND status = ?", userID, model.ArticleStatusPublished)
+
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := baseQuery.
+		Preload("User").
+		Preload("Category").
+		Order("published_at DESC, created_at DESC").
+		Offset(int(offset)).
+		Limit(int(size)).
+		Find(&articles).Error; err != nil {
+		return nil, 0, err
+	}
 	return articles, total, nil
 }
 

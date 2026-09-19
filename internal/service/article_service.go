@@ -48,6 +48,8 @@ type ArticleService interface {
 	ListArticles(ctx context.Context, req *model.ListArticlesRequest) ([]*model.Article, int64, error)
 	SearchArticles(ctx context.Context, req *model.SearchArticlesRequest) ([]*model.Article, int64, error)
 	GetUserArticles(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
+	// ListAuthorArticles 作者主页：按作者列出「已发布」文章（公开，供第三者访问）
+	ListAuthorArticles(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error)
 	IncrementViewCount(ctx context.Context, id uint) (int, error)
 	LikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
 	CancelLikeArticle(ctx context.Context, articleID, userID uint) (likeCount int, liked bool, err error)
@@ -444,6 +446,12 @@ func (s *articleService) GetUserArticles(ctx context.Context, userID uint, page,
 	}
 
 	return s.repo.GetByUserID(ctx, userID, page, size)
+}
+
+// ListAuthorArticles 作者主页：只返回该作者已发布（published）的文章，
+// 供第三者访问作者主页使用；草稿 / 待审核 / 已下线 / 已拒绝一律不暴露。
+func (s *articleService) ListAuthorArticles(ctx context.Context, userID uint, page, size uint) ([]*model.Article, int64, error) {
+	return s.repo.GetPublishedByUserID(ctx, userID, page, size)
 }
 
 // IncrementViewCount 浏览计数自增。

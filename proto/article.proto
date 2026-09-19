@@ -63,6 +63,11 @@ service ArticleService {
     rpc LikeArticle(LikeArticleRequest) returns (LikeArticleResponse);
     rpc CancelLikeArticle(CancelLikeArticleRequest) returns (CancelLikeArticleResponse);
     rpc GetLikeStatus(GetLikeStatusRequest) returns (GetLikeStatusResponse);
+    // 作者主页（公开）：按作者 user_id 列出其「已发布」文章。
+    // 与 GetUserArticles 的区别：后者只返回当前登录用户自己的文章（含草稿），
+    // 且刻意忽略请求里的 user_id 防越权；本接口供第三者访问作者主页，只暴露 published。
+    rpc ListAuthorArticles(ListAuthorArticlesRequest) returns (ListAuthorArticlesResponse);
+
     rpc SearchArticles(SearchArticlesRequest) returns (SearchArticlesResponse);
     rpc GetUserArticles(GetUserArticlesRequest) returns (GetUserArticlesResponse);
     rpc GetCategories(GetCategoriesRequest) returns (GetCategoriesResponse);
@@ -356,6 +361,19 @@ message GetLikeStatusResponse {
     string message = 2;
     uint32 like_count = 3;
     bool liked = 4;
+}
+
+// 作者主页：按作者列出已发布文章（公开接口，仅返回 published）
+message ListAuthorArticlesRequest {
+    uint32 user_id = 1;      // 作者用户 ID
+    uint32 page = 2;
+    uint32 page_size = 3;
+}
+message ListAuthorArticlesResponse {
+    uint32 code = 1;
+    string message = 2;
+    repeated Article articles = 3;
+    uint32 total = 4;
 }
 
 message SearchArticlesRequest {

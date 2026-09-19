@@ -32,6 +32,7 @@ const (
 	ArticleService_LikeArticle_FullMethodName           = "/article.v1.ArticleService/LikeArticle"
 	ArticleService_CancelLikeArticle_FullMethodName     = "/article.v1.ArticleService/CancelLikeArticle"
 	ArticleService_GetLikeStatus_FullMethodName         = "/article.v1.ArticleService/GetLikeStatus"
+	ArticleService_ListAuthorArticles_FullMethodName    = "/article.v1.ArticleService/ListAuthorArticles"
 	ArticleService_SearchArticles_FullMethodName        = "/article.v1.ArticleService/SearchArticles"
 	ArticleService_GetUserArticles_FullMethodName       = "/article.v1.ArticleService/GetUserArticles"
 	ArticleService_GetCategories_FullMethodName         = "/article.v1.ArticleService/GetCategories"
@@ -73,6 +74,10 @@ type ArticleServiceClient interface {
 	LikeArticle(ctx context.Context, in *LikeArticleRequest, opts ...grpc.CallOption) (*LikeArticleResponse, error)
 	CancelLikeArticle(ctx context.Context, in *CancelLikeArticleRequest, opts ...grpc.CallOption) (*CancelLikeArticleResponse, error)
 	GetLikeStatus(ctx context.Context, in *GetLikeStatusRequest, opts ...grpc.CallOption) (*GetLikeStatusResponse, error)
+	// 作者主页（公开）：按作者 user_id 列出其「已发布」文章。
+	// 与 GetUserArticles 的区别：后者只返回当前登录用户自己的文章（含草稿），
+	// 且刻意忽略请求里的 user_id 防越权；本接口供第三者访问作者主页，只暴露 published。
+	ListAuthorArticles(ctx context.Context, in *ListAuthorArticlesRequest, opts ...grpc.CallOption) (*ListAuthorArticlesResponse, error)
 	SearchArticles(ctx context.Context, in *SearchArticlesRequest, opts ...grpc.CallOption) (*SearchArticlesResponse, error)
 	GetUserArticles(ctx context.Context, in *GetUserArticlesRequest, opts ...grpc.CallOption) (*GetUserArticlesResponse, error)
 	GetCategories(ctx context.Context, in *GetCategoriesRequest, opts ...grpc.CallOption) (*GetCategoriesResponse, error)
@@ -229,6 +234,16 @@ func (c *articleServiceClient) GetLikeStatus(ctx context.Context, in *GetLikeSta
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLikeStatusResponse)
 	err := c.cc.Invoke(ctx, ArticleService_GetLikeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *articleServiceClient) ListAuthorArticles(ctx context.Context, in *ListAuthorArticlesRequest, opts ...grpc.CallOption) (*ListAuthorArticlesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAuthorArticlesResponse)
+	err := c.cc.Invoke(ctx, ArticleService_ListAuthorArticles_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -445,6 +460,10 @@ type ArticleServiceServer interface {
 	LikeArticle(context.Context, *LikeArticleRequest) (*LikeArticleResponse, error)
 	CancelLikeArticle(context.Context, *CancelLikeArticleRequest) (*CancelLikeArticleResponse, error)
 	GetLikeStatus(context.Context, *GetLikeStatusRequest) (*GetLikeStatusResponse, error)
+	// 作者主页（公开）：按作者 user_id 列出其「已发布」文章。
+	// 与 GetUserArticles 的区别：后者只返回当前登录用户自己的文章（含草稿），
+	// 且刻意忽略请求里的 user_id 防越权；本接口供第三者访问作者主页，只暴露 published。
+	ListAuthorArticles(context.Context, *ListAuthorArticlesRequest) (*ListAuthorArticlesResponse, error)
 	SearchArticles(context.Context, *SearchArticlesRequest) (*SearchArticlesResponse, error)
 	GetUserArticles(context.Context, *GetUserArticlesRequest) (*GetUserArticlesResponse, error)
 	GetCategories(context.Context, *GetCategoriesRequest) (*GetCategoriesResponse, error)
@@ -515,6 +534,9 @@ func (UnimplementedArticleServiceServer) CancelLikeArticle(context.Context, *Can
 }
 func (UnimplementedArticleServiceServer) GetLikeStatus(context.Context, *GetLikeStatusRequest) (*GetLikeStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLikeStatus not implemented")
+}
+func (UnimplementedArticleServiceServer) ListAuthorArticles(context.Context, *ListAuthorArticlesRequest) (*ListAuthorArticlesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAuthorArticles not implemented")
 }
 func (UnimplementedArticleServiceServer) SearchArticles(context.Context, *SearchArticlesRequest) (*SearchArticlesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SearchArticles not implemented")
@@ -824,6 +846,24 @@ func _ArticleService_GetLikeStatus_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ArticleServiceServer).GetLikeStatus(ctx, req.(*GetLikeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArticleService_ListAuthorArticles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAuthorArticlesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArticleServiceServer).ListAuthorArticles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArticleService_ListAuthorArticles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArticleServiceServer).ListAuthorArticles(ctx, req.(*ListAuthorArticlesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1228,6 +1268,10 @@ var ArticleService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLikeStatus",
 			Handler:    _ArticleService_GetLikeStatus_Handler,
+		},
+		{
+			MethodName: "ListAuthorArticles",
+			Handler:    _ArticleService_ListAuthorArticles_Handler,
 		},
 		{
 			MethodName: "SearchArticles",
