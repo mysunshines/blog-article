@@ -16,6 +16,7 @@ import (
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/blog-article/internal/repository"
 	"github.com/mysunshines/blog-article/internal/service"
+	svcconst "github.com/mysunshines/blog-article/internal/constants"
 	decoratorv0pb "github.com/mysunshines/blog-article/proto/decorator/v0/pb"
 	article "github.com/mysunshines/blog-article/proto/pb/v1"
 	"github.com/mysunshines/gocommon/cache"
@@ -85,7 +86,7 @@ func initInfra(cfg *goconfig.Config) (*gorm.DB, error) {
 
 	// 初始化 Redis 缓存（失败降级，不致命）
 	redisCfg := cfg.Redis
-	redisCfg.KeyPrefix = constants.RedisKeyPrefixArticle
+	redisCfg.KeyPrefix = svcconst.RedisKeyPrefixArticle
 	if err := cache.Init(&redisCfg); err != nil {
 		log.Warnf("Warning: Failed to init Redis: %v", err)
 	}
