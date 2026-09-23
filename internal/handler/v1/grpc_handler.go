@@ -104,7 +104,7 @@ func (h *GrpcArticleHandler) ListArticles(ctx context.Context, req *article.List
 
 	articles := make([]*article.Article, len(result))
 	for i, a := range result {
-		articles[i] = ConvertToProtoArticle(a)
+		articles[i] = ConvertToProtoArticleSummary(a)
 	}
 
 	return &article.ListArticlesResponse{
@@ -311,7 +311,7 @@ func (h *GrpcArticleHandler) ListAuthorArticles(ctx context.Context, req *articl
 
 	list := make([]*article.Article, len(result))
 	for i, a := range result {
-		list[i] = ConvertToProtoArticle(a)
+		list[i] = ConvertToProtoArticleSummary(a)
 	}
 	return &article.ListAuthorArticlesResponse{
 		Code:     uint32(article.ArticleErrorCode_ARTICLE_SUCCESS),
@@ -336,7 +336,7 @@ func (h *GrpcArticleHandler) SearchArticles(ctx context.Context, req *article.Se
 
 	articles := make([]*article.Article, len(result))
 	for i, a := range result {
-		articles[i] = ConvertToProtoArticle(a)
+		articles[i] = ConvertToProtoArticleSummary(a)
 	}
 
 	return &article.SearchArticlesResponse{
@@ -364,7 +364,7 @@ func (h *GrpcArticleHandler) GetUserArticles(ctx context.Context, req *article.G
 
 	articles := make([]*article.Article, len(result))
 	for i, a := range result {
-		articles[i] = ConvertToProtoArticle(a)
+		articles[i] = ConvertToProtoArticleSummary(a)
 	}
 
 	return &article.GetUserArticlesResponse{
@@ -470,4 +470,14 @@ func ConvertToProtoArticle(a *model.Article) *article.Article {
 		Price:        a.Price,
 		BackgroundId: uint32(a.BackgroundID),
 	}
+}
+
+// ConvertToProtoArticleSummary 列表场景用的轻量转换：刻意不填充 Content / ContentHTML。
+// 正文是 LONGTEXT，列表/搜索/作者页/我的文章只展示摘要卡片，无需正文；
+// 去掉后大幅减小 gRPC 响应体与网关 JSON 序列化开销。详情接口仍用 ConvertToProtoArticle。
+func ConvertToProtoArticleSummary(a *model.Article) *article.Article {
+	pb := ConvertToProtoArticle(a)
+	pb.Content = ""
+	pb.ContentHtml = ""
+	return pb
 }

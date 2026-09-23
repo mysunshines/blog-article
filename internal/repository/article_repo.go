@@ -6,12 +6,22 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apperrors "github.com/mysunshines/blog-article/internal/errors"
 	"github.com/mysunshines/blog-article/internal/model"
 	"github.com/mysunshines/gocommon/pool"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// 列表/详情转换 ConvertToProtoArticle 仅读取 User.Username / Category.Name / Tags[i].Name，
+// 因此关联预加载只取主键 + 所需列，避免把 users/categories/tags 表的多余列（nickname/avatar/description 等）扫进内存。
+var (
+	preloadUser     = func(db *gorm.DB) *gorm.DB { return db.Select("id, username") }
+	preloadCategory = func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }
+	preloadTags     = func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }
 )
 
 type ArticleRepository interface {
@@ -122,9 +132,9 @@ func (r *articleRepository) Create(ctx context.Context, article *model.Article) 
 func (r *articleRepository) GetByID(ctx context.Context, id uint) (*model.Article, error) {
 	var article model.Article
 	result := r.db.WithContext(ctx).
-		Preload("User").
-		Preload("Category").
-		Preload("Tags").
+		Preload("User", preloadUser).
+		Preload("Category", preloadCategory).
+		Preload("Tags", preloadTags).
 		First(&article, id)
 
 	if result.Error != nil {
@@ -180,9 +190,9 @@ func (r *articleRepository) GetArticlesByIDs(ctx context.Context, ids []uint) ([
 func (r *articleRepository) GetBySlug(ctx context.Context, slug string) (*model.Article, error) {
 	var article model.Article
 	result := r.db.WithContext(ctx).
-		Preload("User").
-		Preload("Category").
-		Preload("Tags").
+		Preload("User", preloadUser).
+		Preload("Category", preloadCategory).
+		Preload("Tags", preloadTags).
 		Where("slug = ?", slug).
 		First(&article)
 
@@ -298,9 +308,9 @@ func (r *articleRepository) List(ctx context.Context, req *model.ListArticlesReq
 		},
 		func(ctx context.Context) (interface{}, error) {
 			return nil, baseQuery.Session(&gorm.Session{}).
-				Preload("User").
-				Preload("Category").
-				Preload("Tags").
+				Preload("User", preloadUser).
+				Preload("Category", preloadCategory).
+				Preload("Tags", preloadTags).
 				Order(orderClause).
 				Offset(int(offset)).
 				Limit(int(size)).
@@ -328,8 +338,6 @@ func (r *articleRepository) Search(ctx context.Context, req *model.SearchArticle
 		return nil, 0, apperrors.BadRequest("搜索关键词不能为空")
 	}
 
-	searchPattern := "%" + keyword + "%"
-
 	page := req.Page
 	if page < 1 {
 		page = 1
@@ -340,9 +348,31 @@ func (r *articleRepository) Search(ctx context.Context, req *model.SearchArticle
 	}
 	offset := (page - 1) * size
 
+	statuses := []string{model.ArticleStatusPublished, model.ArticleStatusPending}
+
+	// 匹配范围：仅 title / summary，不再扫描正文 content（LONGTEXT，匹配代价高且非搜索诉求）。
+	// 多字符（含中文）走 ngram FULLTEXT 索引，快速且按相关度排序；
+	// 单字符 ngram 无法分词会无命中，回退到 title/summary 的 LIKE 模糊匹配。
+	var where string
+	var whereArgs []interface{}
+	var orderClause clause.OrderBy
+	if utf8.RuneCountInString(keyword) <= 1 {
+		pattern := "%" + keyword + "%"
+		where = "status IN ? AND (title LIKE ? OR summary LIKE ?)"
+		whereArgs = []interface{}{statuses, pattern, pattern}
+		orderClause = clause.OrderBy{Expression: clause.Expr{SQL: "created_at DESC"}}
+	} else {
+		match := "MATCH(title, summary) AGAINST (? IN NATURAL LANGUAGE MODE)"
+		where = "status IN ? AND " + match
+		whereArgs = []interface{}{statuses, keyword}
+		orderClause = clause.OrderBy{Expression: clause.Expr{
+			SQL:  "MATCH(title, summary) AGAINST (? IN NATURAL LANGUAGE MODE) DESC, created_at DESC",
+			Vars: []interface{}{keyword},
+		}}
+	}
+
 	baseQuery := r.db.WithContext(ctx).Model(&model.Article{}).
-		Where("status IN ? AND (title LIKE ? OR content LIKE ? OR summary LIKE ?)",
-			[]string{model.ArticleStatusPublished, model.ArticleStatusPending}, searchPattern, searchPattern, searchPattern)
+		Where(where, whereArgs...)
 
 	// 并行：COUNT + SELECT
 	results := pool.Go(ctx,
@@ -351,9 +381,10 @@ func (r *articleRepository) Search(ctx context.Context, req *model.SearchArticle
 		},
 		func(ctx context.Context) (interface{}, error) {
 			return nil, baseQuery.Session(&gorm.Session{}).
-				Preload("User").
-				Preload("Category").
-				Order("created_at DESC").
+				Clauses(orderClause).
+				Preload("User", preloadUser).
+				Preload("Category", preloadCategory).
+				Preload("Tags", preloadTags).
 				Offset(int(offset)).
 				Limit(int(size)).
 				Find(&articles).Error
@@ -392,8 +423,8 @@ func (r *articleRepository) GetPublishedByUserID(ctx context.Context, userID uin
 		return nil, 0, err
 	}
 	if err := baseQuery.
-		Preload("User").
-		Preload("Category").
+		Preload("User", preloadUser).
+		Preload("Category", preloadCategory).
 		Order("published_at DESC, created_at DESC").
 		Offset(int(offset)).
 		Limit(int(size)).
@@ -424,9 +455,9 @@ func (r *articleRepository) GetByUserID(ctx context.Context, userID uint, page, 
 		},
 		func(ctx context.Context) (interface{}, error) {
 			return nil, baseQuery.Session(&gorm.Session{}).
-				Preload("User").
-				Preload("Category").
-				Preload("Tags").
+				Preload("User", preloadUser).
+				Preload("Category", preloadCategory).
+				Preload("Tags", preloadTags).
 				Order("created_at DESC").
 				Offset(int(offset)).
 				Limit(int(size)).
@@ -577,9 +608,9 @@ func (r *articleRepository) AdminList(ctx context.Context, req *model.AdminListA
 		},
 		func(ctx context.Context) (interface{}, error) {
 			return nil, baseQuery.Session(&gorm.Session{}).
-				Preload("User").
-				Preload("Category").
-				Preload("Tags").
+				Preload("User", preloadUser).
+				Preload("Category", preloadCategory).
+				Preload("Tags", preloadTags).
 				Order("created_at DESC").
 				Offset(int(offset)).
 				Limit(int(size)).
